@@ -1,4 +1,5 @@
 import { repo } from '../db/connection';
+import { CloudDbService } from '../db/cloudDbService';
 import * as XLSX from 'xlsx';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -34,9 +35,11 @@ export interface ImportResult {
 
 export class ImportService {
   private activationId: number;
+  private cloudDbService: CloudDbService | null = null;
 
-  constructor(activationId: number) {
+  constructor(activationId: number, cloudDbService?: CloudDbService) {
     this.activationId = activationId;
+    this.cloudDbService = cloudDbService || null;
   }
 
   /**
@@ -51,66 +54,175 @@ export class ImportService {
       let importedCount = 0;
       const errors: string[] = [];
 
-      for (let i = 0; i < customerData.length; i++) {
-        const customer = customerData[i];
-        
-        // 更新进度
+      // 使用云端数据库批量导入
+      if (this.cloudDbService) {
+        // 批量导入优化：先获取一次现有客户列表
         if (onProgress) {
-          const percent = Math.round(((i + 1) / total) * 100);
           onProgress({
-            current: i + 1,
+            current: 0,
             total: total,
-            percent: percent,
-            message: `Importing customer: ${customer.name}...`
+            percent: 0,
+            message: 'Loading existing customers...'
           });
         }
-        try {
-          // 如果RefNo存在，检查是否已存在相同customer_number的客户
+        
+        const existingCustomers = await this.cloudDbService.getCustomers();
+        const existingNumbers = new Set(existingCustomers.map(c => c.customer_number).filter(Boolean));
+        const existingNameAddress = new Set(
+          existingCustomers.map(c => `${c.name}|${c.address || ''}`).filter(Boolean)
+        );
+
+        // 准备批量导入的数据（过滤重复）
+        const customersToImport: Array<{
+          name: string;
+          phone?: string;
+          address?: string;
+          customer_number?: string;
+        }> = [];
+
+        for (let i = 0; i < customerData.length; i++) {
+          const customer = customerData[i];
+          
+          // 更新进度
+          if (onProgress && i % 100 === 0) {
+            const percent = Math.round((i / total) * 100);
+            onProgress({
+              current: i,
+              total: total,
+              percent: percent,
+              message: `Preparing import: ${i} / ${total}...`
+            });
+          }
+
+          // 检查重复
           if (customer.refNo && customer.refNo.trim()) {
-            const allCustomers = repo.customers.getAll(this.activationId) as any[];
-            const existingByNumber = allCustomers.find(
-              (c: any) => c.customer_number === customer.refNo.toString().trim()
-            );
-            
-            if (existingByNumber) {
-              console.log(`客户编号 ${customer.refNo} 已存在（客户: ${existingByNumber.name}），跳过导入`);
-              continue;
+            if (existingNumbers.has(customer.refNo.toString().trim())) {
+              continue; // 跳过重复的编号
             }
           }
           
-          // 检查是否已存在相同姓名和地址的客户
-          const existingCustomer = repo.customers.findByNameAndAddress(
-            this.activationId, 
-            customer.name, 
-            this.formatAddress(customer)
-          );
-
-          if (existingCustomer) {
-            console.log(`客户 ${customer.name} 已存在，跳过导入`);
-            continue;
+          const nameAddressKey = `${customer.name}|${this.formatAddress(customer)}`;
+          if (existingNameAddress.has(nameAddressKey)) {
+            continue; // 跳过重复的姓名+地址
           }
 
-          // 创建新客户，使用RefNo作为customer_number
-          const result = repo.customers.create(this.activationId, {
+          // 添加到导入列表
+          customersToImport.push({
             name: customer.name,
             phone: customer.telephone,
             address: this.formatAddress(customer),
             customer_number: customer.refNo && customer.refNo.trim() ? customer.refNo.toString().trim() : undefined
           });
 
-          if (result.changes > 0) {
-            importedCount++;
+          // 更新已存在集合（避免同一批次内重复）
+          if (customer.refNo && customer.refNo.trim()) {
+            existingNumbers.add(customer.refNo.toString().trim());
           }
-        } catch (error) {
-          const errorMsg = `导入客户 ${customer.name} (RefNo: ${customer.refNo}) 失败: ${error}`;
-          errors.push(errorMsg);
-          console.error(errorMsg);
+          existingNameAddress.add(nameAddressKey);
+        }
+
+        // 批量导入（每批200条）
+        const batchSize = 200;
+        const batches = Math.ceil(customersToImport.length / batchSize);
+
+        for (let batchIndex = 0; batchIndex < batches; batchIndex++) {
+          const start = batchIndex * batchSize;
+          const end = Math.min(start + batchSize, customersToImport.length);
+          const batch = customersToImport.slice(start, end);
+
+          if (onProgress) {
+            const percent = Math.round((start / total) * 100);
+            onProgress({
+              current: start,
+              total: total,
+              percent: percent,
+              message: `Importing batch ${batchIndex + 1} / ${batches} (${start} / ${total})...`
+            });
+          }
+
+          try {
+            const result = await this.cloudDbService.createCustomersBatch(batch);
+            importedCount += result.created;
+            if (result.errors && result.errors.length > 0) {
+              errors.push(...result.errors);
+            }
+          } catch (error: any) {
+            errors.push(`Batch ${batchIndex + 1} failed: ${error.message}`);
+          }
+        }
+
+        if (onProgress) {
+          onProgress({
+            current: total,
+            total: total,
+            percent: 100,
+            message: `Import completed: ${importedCount} customers imported`
+          });
+        }
+      } else {
+        // 使用本地数据库（向后兼容，保持原有逻辑）
+        for (let i = 0; i < customerData.length; i++) {
+          const customer = customerData[i];
+          
+          // 更新进度
+          if (onProgress) {
+            const percent = Math.round(((i + 1) / total) * 100);
+            onProgress({
+              current: i + 1,
+              total: total,
+              percent: percent,
+              message: `Importing customer: ${customer.name}...`
+            });
+          }
+          try {
+            // 使用本地数据库（向后兼容）
+            // 如果RefNo存在，检查是否已存在相同customer_number的客户
+            if (customer.refNo && customer.refNo.trim()) {
+              const allCustomers = repo.customers.getAll(this.activationId) as any[];
+              const existingByNumber = allCustomers.find(
+                (c: any) => c.customer_number === customer.refNo.toString().trim()
+              );
+              
+              if (existingByNumber) {
+                console.log(`Customer number ${customer.refNo} already exists (Customer: ${existingByNumber.name}), skipping import`);
+                continue;
+              }
+            }
+            
+            // 检查是否已存在相同姓名和地址的客户
+            const existingCustomer = repo.customers.findByNameAndAddress(
+              this.activationId, 
+              customer.name, 
+              this.formatAddress(customer)
+            );
+
+            if (existingCustomer) {
+              console.log(`Customer ${customer.name} already exists, skipping import`);
+              continue;
+            }
+
+            // 创建新客户，使用RefNo作为customer_number
+            const result = repo.customers.create(this.activationId, {
+              name: customer.name,
+              phone: customer.telephone,
+              address: this.formatAddress(customer),
+              customer_number: customer.refNo && customer.refNo.trim() ? customer.refNo.toString().trim() : undefined
+            });
+
+            if (result.changes > 0) {
+              importedCount++;
+            }
+          } catch (error: any) {
+            const errorMsg = `导入客户 ${customer.name} (RefNo: ${customer.refNo}) 失败: ${error}`;
+            errors.push(errorMsg);
+            console.error(errorMsg);
+          }
         }
       }
 
       return {
         success: true,
-        message: `成功导入 ${importedCount} 个客户`,
+        message: `Successfully imported ${importedCount} customers`,
         importedCustomers: importedCount,
         importedVehicles: 0,
         errors
@@ -118,7 +230,7 @@ export class ImportService {
     } catch (error) {
       return {
         success: false,
-        message: `导入失败: ${error}`,
+        message: `Import failed: ${error}`,
         importedCustomers: 0,
         importedVehicles: 0,
         errors: [String(error)]
@@ -159,7 +271,7 @@ export class ImportService {
           );
 
           if (existingVehicle) {
-            console.log(`车辆 ${vehicle.license} 已存在，跳过导入`);
+            console.log(`Vehicle ${vehicle.license} already exists, skipping import`);
             continue;
           }
 
@@ -171,7 +283,7 @@ export class ImportService {
             const customers = repo.customers.findByName(this.activationId, vehicle.idriver.trim()) as any[];
             if (customers && customers.length > 0) {
               customerId = customers[0].id;
-              console.log(`车辆 ${vehicle.license} 匹配到客户: ${customers[0].name}`);
+              console.log(`Vehicle ${vehicle.license} matched to customer: ${customers[0].name}`);
             }
           }
           
@@ -198,7 +310,7 @@ export class ImportService {
 
       return {
         success: true,
-        message: `成功导入 ${importedCount} 个车辆`,
+        message: `Successfully imported ${importedCount} vehicles`,
         importedCustomers: 0,
         importedVehicles: importedCount,
         errors
@@ -206,7 +318,7 @@ export class ImportService {
     } catch (error) {
       return {
         success: false,
-        message: `导入失败: ${error}`,
+        message: `Import failed: ${error}`,
         importedCustomers: 0,
         importedVehicles: 0,
         errors: [String(error)]
@@ -225,7 +337,7 @@ export class ImportService {
     } else if (ext === '.xlsx' || ext === '.xls') {
       return this.parseExcel(filePath);
     } else {
-      throw new Error('不支持的文件格式');
+      throw new Error('Unsupported file format');
     }
   }
 
@@ -237,7 +349,7 @@ export class ImportService {
     const lines = content.split('\n').filter(line => line.trim());
     
     if (lines.length < 2) {
-      throw new Error('文件内容不足');
+      throw new Error('Insufficient file content');
     }
 
     const headers = lines[0].split(',').map(h => h.trim().replace(/"/g, ''));

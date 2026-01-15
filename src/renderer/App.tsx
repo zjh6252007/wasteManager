@@ -8,7 +8,7 @@ import Settings from './components/Settings';
 import MetalTypeManagement from './components/MetalTypeManagement';
 import ImportProgress from './components/ImportProgress';
 
-// 默认占位图片（SVG编码为base64 data URI）
+// Default placeholder image (SVG encoded as base64 data URI)
 const DEFAULT_PLACEHOLDER_IMAGE = `data:image/svg+xml;base64,${btoa(`
   <svg width="200" height="200" xmlns="http://www.w3.org/2000/svg">
     <rect width="200" height="200" fill="#f0f0f0"/>
@@ -18,8 +18,12 @@ const DEFAULT_PLACEHOLDER_IMAGE = `data:image/svg+xml;base64,${btoa(`
   </svg>
 `)}`;
 
-// 会话详情组件
-const SessionDetails: React.FC<{ sessionId: number }> = ({ sessionId }) => {
+// Session details component
+const SessionDetails: React.FC<{ 
+  sessionId: number;
+  onContinue?: (sessionId: number) => Promise<void>;
+  onDelete?: (sessionId: number) => Promise<void>;
+}> = ({ sessionId, onContinue, onDelete }) => {
   const [sessionWeighings, setSessionWeighings] = useState<any[]>([]);
   const [sessionInfo, setSessionInfo] = useState<any>(null);
   const [biometricData, setBiometricData] = useState<any>(null);
@@ -27,21 +31,24 @@ const SessionDetails: React.FC<{ sessionId: number }> = ({ sessionId }) => {
   const [imageCache, setImageCache] = useState<{ [key: string]: string }>({});
   const [imageErrors, setImageErrors] = useState<{ [key: string]: boolean }>({});
   const [generatingReport, setGeneratingReport] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deletePassword, setDeletePassword] = useState('');
+  const [deleting, setDeleting] = useState(false);
 
-  // 加载session数据和生物识别数据
+  // Load session data and biometric data
   useEffect(() => {
     const loadSessionData = async () => {
       try {
         setLoading(true);
-        // 加载称重记录
+        // Load weighing records
         const weighings = await window.electronAPI.weighings.getBySession(sessionId);
         setSessionWeighings(weighings);
         
-        // 加载session信息
+        // Load session information
         const session = await window.electronAPI.weighingSessions.getById(sessionId);
         setSessionInfo(session);
         
-        // 如果有customer_id，加载生物识别数据
+        // If customer_id exists, load biometric data
         if (session?.customer_id) {
           try {
             const biometric = await window.electronAPI.biometric.getByCustomerId(session.customer_id);
@@ -63,13 +70,13 @@ const SessionDetails: React.FC<{ sessionId: number }> = ({ sessionId }) => {
     loadSessionData();
   }, [sessionId]);
 
-  // 加载图片到缓存 - 必须在所有hooks之后，return之前
+  // Load images to cache - must be after all hooks, before return
   useEffect(() => {
-    if (loading) return; // 如果还在加载中，不加载图片
+    if (loading) return; // If still loading, don't load images
     
     const imagePaths: string[] = [];
     
-    // 收集需要加载的图片路径
+    // Collect image paths that need to be loaded
     if (biometricData?.face_image_path) {
       imagePaths.push(biometricData.face_image_path);
     }
@@ -83,19 +90,19 @@ const SessionDetails: React.FC<{ sessionId: number }> = ({ sessionId }) => {
       }
     });
     
-    // 加载所有图片
+    // Load all images
     imagePaths.forEach(imagePath => {
-      // 使用函数式更新检查缓存，避免依赖imageCache
+      // Use functional update to check cache, avoid dependency on imageCache
       setImageCache(prev => {
-        // 如果已经在缓存中，跳过
+        // If already in cache, skip
         if (prev[imagePath]) return prev;
         
-        // 异步加载图片
+        // Asynchronously load image
         (window.electronAPI as any).image.readFile(imagePath)
           .then((dataUrl: string | null) => {
             if (dataUrl) {
               setImageCache(current => {
-                if (current[imagePath]) return current; // 避免重复设置
+                if (current[imagePath]) return current; // Avoid duplicate setting
                 return { ...current, [imagePath]: dataUrl };
               });
             }
@@ -104,51 +111,167 @@ const SessionDetails: React.FC<{ sessionId: number }> = ({ sessionId }) => {
             console.error(`Failed to load image ${imagePath}:`, error);
           });
         
-        return prev; // 先返回原值，等异步加载完成后再更新
+        return prev; // Return original value first, update after async load completes
       });
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [biometricData, sessionWeighings, loading]); // imageCache通过函数式更新访问，不需要在依赖中
+  }, [biometricData, sessionWeighings, loading]); // imageCache accessed via functional update, not needed in dependencies
 
   const handleGenerateReport = async () => {
     try {
       setGeneratingReport(true);
       await (window.electronAPI as any).report.generatePoliceReport(sessionId);
-      // PDF会在新窗口中自动打开，不需要弹窗提示
+      // PDF will automatically open in new window, no popup needed
     } catch (error: any) {
       console.error('Failed to generate report:', error);
-      alert(`生成报告失败: ${error.message || '未知错误'}`);
+      alert(`Failed to generate report: ${error.message || 'Unknown error'}`);
     } finally {
       setGeneratingReport(false);
     }
   };
 
+  const handleContinue = async () => {
+    if (onContinue) {
+      await onContinue(sessionId);
+    }
+  };
+
+  const handleDeleteSession = async () => {
+    if (!deletePassword) {
+      alert('Please enter your password');
+      return;
+    }
+
+    try {
+      setDeleting(true);
+      
+      // Verify password
+      const currentUser = await (window.electronAPI as any).auth.getCurrentUser();
+      if (!currentUser) {
+        alert('User not found. Please login again.');
+        setShowDeleteConfirm(false);
+        setDeletePassword('');
+        // 恢复焦点到body，避免输入框被锁住
+        setTimeout(() => {
+          document.body.focus();
+          if (document.activeElement && document.activeElement instanceof HTMLElement) {
+            document.activeElement.blur();
+          }
+        }, 100);
+        return;
+      }
+
+      // Verify password by attempting to authenticate
+      const authResult = await (window.electronAPI as any).auth.verifyPassword(currentUser.username, deletePassword);
+      if (!authResult.success) {
+        alert('Incorrect password. Please try again.');
+        setDeletePassword('');
+        // 重新聚焦到密码输入框
+        setTimeout(() => {
+          const passwordInput = document.querySelector('input[type="password"]') as HTMLInputElement;
+          if (passwordInput) {
+            passwordInput.focus();
+          }
+        }, 100);
+        return;
+      }
+
+      // Delete session
+      if (onDelete) {
+        await onDelete(sessionId);
+      } else {
+        // Fallback: direct delete if onDelete callback not provided
+        await (window.electronAPI as any).weighingSessions.delete(sessionId);
+      }
+
+      // Close dialog
+      setShowDeleteConfirm(false);
+      setDeletePassword('');
+      
+      // 恢复焦点，避免输入框被锁住
+      setTimeout(() => {
+        document.body.focus();
+        if (document.activeElement && document.activeElement instanceof HTMLElement) {
+          document.activeElement.blur();
+        }
+        // 确保可以正常输入
+        const activeElement = document.activeElement;
+        if (activeElement && activeElement instanceof HTMLElement) {
+          activeElement.blur();
+        }
+      }, 100);
+    } catch (error: any) {
+      console.error('Failed to delete session:', error);
+      alert(`Failed to delete session: ${error.message || 'Unknown error'}`);
+      // 恢复焦点
+      setTimeout(() => {
+        document.body.focus();
+        if (document.activeElement && document.activeElement instanceof HTMLElement) {
+          document.activeElement.blur();
+        }
+      }, 100);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  // Check if session is unfinished OR if biometric data is incomplete
+  const isBiometricIncomplete = sessionInfo?.customer_id && (
+    !biometricData?.face_image_path || 
+    !biometricData?.fingerprint_image_path || 
+    !biometricData?.signature_image_path
+  );
+  const isUnfinished = sessionInfo?.status === 'unfinished' || isBiometricIncomplete;
+
   return (
-    <div className="record-expanded">
+    <div className="record-expanded" style={{ position: 'relative' }}>
       <div className="expanded-details">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
           <h4 style={{ margin: 0 }}>Session Details</h4>
-          <button
-            onClick={handleGenerateReport}
-            disabled={generatingReport || loading}
-            className="generate-report-btn"
-            style={{
-              padding: '8px 16px',
-              backgroundColor: generatingReport ? '#6c757d' : '#dc3545',
-              color: 'white',
-              border: 'none',
-              borderRadius: '4px',
-              cursor: generatingReport ? 'not-allowed' : 'pointer',
-              fontSize: '14px',
-              fontWeight: '500',
-              transition: 'background-color 0.2s'
-            }}
-          >
-            {generatingReport ? '生成中...' : '生成 Police Report'}
-          </button>
+          <div style={{ display: 'flex', gap: '10px' }}>
+            {/* Continue button - show when session is unfinished */}
+            {isUnfinished && onContinue && (
+              <button
+                onClick={handleContinue}
+                disabled={loading}
+                className="continue-btn"
+                style={{
+                  padding: '8px 16px',
+                  backgroundColor: '#28a745',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: loading ? 'not-allowed' : 'pointer',
+                  fontSize: '14px',
+                  fontWeight: '500',
+                  transition: 'background-color 0.2s'
+                }}
+              >
+                Continue
+              </button>
+            )}
+            <button
+              onClick={handleGenerateReport}
+              disabled={generatingReport || loading}
+              className="generate-report-btn"
+              style={{
+                padding: '8px 16px',
+                backgroundColor: generatingReport ? '#6c757d' : '#dc3545',
+                color: 'white',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: generatingReport ? 'not-allowed' : 'pointer',
+                fontSize: '14px',
+                fontWeight: '500',
+                transition: 'background-color 0.2s'
+              }}
+            >
+              {generatingReport ? 'Generating...' : 'Generate Police Report'}
+            </button>
+          </div>
         </div>
         
-        {/* 生物识别信息部分 */}
+        {/* Biometric information section */}
         <div className="biometric-section">
           <h5>Biometric Information</h5>
           <div className="biometric-images">
@@ -197,7 +320,7 @@ const SessionDetails: React.FC<{ sessionId: number }> = ({ sessionId }) => {
           </div>
         </div>
 
-        {/* 商品列表部分 */}
+        {/* Product list section */}
         <div className="session-weighings">
           <h5>Products Sold</h5>
           {sessionWeighings && sessionWeighings.length > 0 ? (
@@ -249,7 +372,173 @@ const SessionDetails: React.FC<{ sessionId: number }> = ({ sessionId }) => {
             <div className="no-items">No products found in this session.</div>
           )}
         </div>
+        
+        {/* Delete button - positioned at bottom right */}
+        {onDelete && (
+          <div style={{ 
+            position: 'absolute', 
+            bottom: '20px', 
+            right: '20px',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'flex-end',
+            gap: '10px'
+          }}>
+            <button
+              onClick={() => setShowDeleteConfirm(true)}
+              disabled={loading || deleting}
+              style={{
+                padding: '8px 16px',
+                backgroundColor: '#dc3545',
+                color: 'white',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: loading || deleting ? 'not-allowed' : 'pointer',
+                fontSize: '14px',
+                fontWeight: '500',
+                transition: 'background-color 0.2s',
+                opacity: loading || deleting ? 0.6 : 1
+              }}
+            >
+              {deleting ? 'Deleting...' : '🗑️ Delete Session'}
+            </button>
+          </div>
+        )}
       </div>
+      
+      {/* Delete confirmation dialog */}
+      {showDeleteConfirm && (
+        <div 
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 10000
+          }}
+          onClick={(e) => {
+            // 点击背景关闭对话框
+            if (e.target === e.currentTarget) {
+              setShowDeleteConfirm(false);
+              setDeletePassword('');
+              // 恢复焦点
+              setTimeout(() => {
+                document.body.focus();
+                if (document.activeElement && document.activeElement instanceof HTMLElement) {
+                  document.activeElement.blur();
+                }
+              }, 100);
+            }
+          }}
+        >
+          <div 
+            style={{
+              backgroundColor: 'white',
+              padding: '30px',
+              borderRadius: '8px',
+              minWidth: '400px',
+              maxWidth: '500px',
+              boxShadow: '0 4px 6px rgba(0, 0, 0, 0.1)'
+            }}
+            onClick={(e) => {
+              // 阻止事件冒泡，避免点击对话框内容时关闭
+              e.stopPropagation();
+            }}
+          >
+            <h3 style={{ marginTop: 0, marginBottom: '20px', color: '#dc3545' }}>Delete Session</h3>
+            <p style={{ marginBottom: '20px', color: '#666' }}>
+              Are you sure you want to delete this session? This action cannot be undone.
+            </p>
+            <div style={{ marginBottom: '20px' }}>
+              <label style={{ display: 'block', marginBottom: '8px', fontWeight: '500' }}>
+                Enter your password to confirm:
+              </label>
+              <input
+                type="password"
+                value={deletePassword}
+                onChange={(e) => setDeletePassword(e.target.value)}
+                placeholder="Enter password"
+                style={{
+                  width: '100%',
+                  padding: '10px',
+                  border: '1px solid #ddd',
+                  borderRadius: '4px',
+                  fontSize: '14px',
+                  boxSizing: 'border-box'
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && deletePassword && !deleting) {
+                    e.preventDefault();
+                    handleDeleteSession();
+                  }
+                  if (e.key === 'Escape') {
+                    e.preventDefault();
+                    setShowDeleteConfirm(false);
+                    setDeletePassword('');
+                    // 恢复焦点
+                    setTimeout(() => {
+                      document.body.focus();
+                      if (document.activeElement && document.activeElement instanceof HTMLElement) {
+                        document.activeElement.blur();
+                      }
+                    }, 100);
+                  }
+                }}
+                autoFocus
+              />
+            </div>
+            <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => {
+                  setShowDeleteConfirm(false);
+                  setDeletePassword('');
+                  // 恢复焦点，避免输入框被锁住
+                  setTimeout(() => {
+                    document.body.focus();
+                    if (document.activeElement && document.activeElement instanceof HTMLElement) {
+                      document.activeElement.blur();
+                    }
+                  }, 100);
+                }}
+                disabled={deleting}
+                style={{
+                  padding: '10px 20px',
+                  backgroundColor: '#6c757d',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: deleting ? 'not-allowed' : 'pointer',
+                  fontSize: '14px',
+                  fontWeight: '500'
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDeleteSession}
+                disabled={!deletePassword || deleting}
+                style={{
+                  padding: '10px 20px',
+                  backgroundColor: deleting ? '#6c757d' : '#dc3545',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: !deletePassword || deleting ? 'not-allowed' : 'pointer',
+                  fontSize: '14px',
+                  fontWeight: '500'
+                }}
+              >
+                {deleting ? 'Deleting...' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -292,8 +581,9 @@ function App() {
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [currentActivation, setCurrentActivation] = useState<any>(null);
   const [customers, setCustomers] = useState<Customer[]>([]);
+  const [appVersion, setAppVersion] = useState<string>('');
   
-  // 客户列表分页和搜索状态
+  // Customer list pagination and search state
   const [customerPage, setCustomerPage] = useState(1);
   const [customerPageSize] = useState(10);
   const [customerListSearchQuery, setCustomerListSearchQuery] = useState('');
@@ -305,14 +595,14 @@ function App() {
   } | null>(null);
   const [customerListLoading, setCustomerListLoading] = useState(false);
   
-  // 客户展开和编辑状态
+  // Customer expand and edit state
   const [expandedCustomers, setExpandedCustomers] = useState<Set<number>>(new Set());
   const [editingCustomers, setEditingCustomers] = useState<Set<number>>(new Set());
   const [customerEditData, setCustomerEditData] = useState<{ [key: number]: any }>({});
   const [customerVehiclesData, setCustomerVehiclesData] = useState<{ [key: number]: any[] }>({});
   const [customerLicensePhotos, setCustomerLicensePhotos] = useState<{ [key: number]: string }>({});
   
-  // 车辆添加模态框状态
+  // Vehicle add modal state
   const [showAddVehicleModal, setShowAddVehicleModal] = useState(false);
   const [addVehicleCustomerId, setAddVehicleCustomerId] = useState<number | null>(null);
   const [vehicleForm, setVehicleForm] = useState({
@@ -322,12 +612,47 @@ function App() {
     make: '',
     model: ''
   });
+
+  // Quick add customer modal state
+  const [showQuickAddCustomerModal, setShowQuickAddCustomerModal] = useState(false);
+  const [quickAddCustomerForm, setQuickAddCustomerForm] = useState({
+    name: '',
+    phone: '',
+    address: ''
+  });
   
   const [metalTypes, setMetalTypes] = useState<any[]>([]);
   const [weighings, setWeighings] = useState<Weighing[]>([]);
   const [unfinishedCount, setUnfinishedCount] = useState<number>(0);
 
-  // 设置摄像头设备枚举监听器
+  // Data mismatch dialog state
+  const [syncInProgress, setSyncInProgress] = useState(false);
+  const [syncProgress, setSyncProgress] = useState<{ progress: number; message: string; stage?: string } | null>(null);
+  const [syncType, setSyncType] = useState<'upload' | 'download' | null>(null);
+  
+  // Sync notification state when closing
+  const [showClosingSyncDialog, setShowClosingSyncDialog] = useState(false);
+  const [closingSyncMessage, setClosingSyncMessage] = useState('');
+  
+  // Error message toast state
+  const [errorMessage, setErrorMessage] = useState('');
+  const [successMessage, setSuccessMessage] = useState('');
+
+  // Load app version on mount
+  useEffect(() => {
+    const loadVersion = async () => {
+      try {
+        const version = await (window.electronAPI as any).update.getCurrentVersion();
+        setAppVersion(version || '0.0.1');
+      } catch (error) {
+        console.error('Failed to load app version:', error);
+        setAppVersion('0.0.1');
+      }
+    };
+    loadVersion();
+  }, []);
+
+  // Set up camera device enumeration listener
   useEffect(() => {
     const electronAPI = window.electronAPI as any;
     if (!electronAPI || !electronAPI.ipc) {
@@ -335,26 +660,26 @@ function App() {
       return;
     }
     
-    // 监听获取摄像头设备列表的请求
+    // Listen for camera device list requests
     const handleGetDevices = async () => {
-      console.log('收到摄像头设备枚举请求');
+      console.log('Received camera device enumeration request');
       try {
-        // 首先请求媒体权限（如果需要）
+        // First request media permissions (if needed)
         try {
           const stream = await navigator.mediaDevices.getUserMedia({ video: true });
           stream.getTracks().forEach((track: MediaStreamTrack) => track.stop());
         } catch (permError) {
-          console.log('媒体权限请求失败，但继续枚举设备:', permError);
-          // 权限被拒绝，但仍然可以枚举设备（只是没有label）
+          console.log('Media permission request failed, but continuing device enumeration:', permError);
+          // Permission denied, but can still enumerate devices (just no label)
         }
         
-        // 枚举设备
+        // Enumerate devices
         const devices = await navigator.mediaDevices.enumerateDevices();
         const cameraDevices = devices.filter(device => device.kind === 'videoinput');
         
-        console.log('找到摄像头设备:', cameraDevices.length, cameraDevices);
+        console.log('Found camera devices:', cameraDevices.length, cameraDevices);
         
-        // 将MediaDeviceInfo转换为可序列化的对象
+        // Convert MediaDeviceInfo to serializable object
         const serializableDevices = cameraDevices.map(device => ({
           deviceId: device.deviceId,
           kind: device.kind,
@@ -362,9 +687,9 @@ function App() {
           groupId: device.groupId
         }));
         
-        console.log('发送设备列表到主进程:', serializableDevices);
+        console.log('Sending device list to main process:', serializableDevices);
         
-        // 发送设备列表回主进程
+        // Send device list back to main process
         electronAPI.ipc.send('camera:devices', serializableDevices);
       } catch (error) {
         console.error('Failed to enumerate camera devices:', error);
@@ -372,29 +697,74 @@ function App() {
       }
     };
 
-    // 监听主进程的请求
+    // Listen for main process requests
     electronAPI.ipc.on('camera:get-devices', handleGetDevices);
-    console.log('已设置摄像头设备枚举监听器');
+    console.log('Camera device enumeration listener set up');
 
-    // 清理监听器
+    // Clean up listener
     return () => {
       electronAPI.ipc.removeListener('camera:get-devices', handleGetDevices);
     };
   }, []);
+
+  // Listen for data mismatch events
+  useEffect(() => {
+    const electronAPI = window.electronAPI as any;
+    if (!electronAPI || !electronAPI.sync) {
+      return;
+    }
+
+
+    const handleClosingSync = (data: { message: string }) => {
+      setClosingSyncMessage(data.message);
+      setShowClosingSyncDialog(true);
+    };
+
+    const handleClosingSyncComplete = (data: { success: boolean; message: string }) => {
+      setClosingSyncMessage(data.message);
+      // Delay closing dialog to let user see completion message
+      setTimeout(() => {
+        setShowClosingSyncDialog(false);
+      }, 1000);
+    };
+
+    const handleSyncProgress = (progress: { stage: string; progress: number; message: string; deviceCount?: number; syncedRecords?: number; totalRecords?: number }) => {
+      setSyncProgress({
+        progress: progress.progress,
+        message: progress.message,
+        stage: progress.stage
+      });
+    };
+
+    electronAPI.sync.onClosingSync(handleClosingSync);
+    electronAPI.sync.onClosingSyncComplete(handleClosingSyncComplete);
+    electronAPI.sync.onProgress(handleSyncProgress);
+
+    return () => {
+      electronAPI.sync.removeClosingSyncListener();
+      electronAPI.sync.removeProgressListener();
+    };
+  }, []);
   
-  // Records筛选和分页状态
+  // Records filter and pagination state
   const [recordsFilter, setRecordsFilter] = useState({
     startDate: '',
     endDate: '',
     customerName: '',
     page: 1
   });
+  
+  // Batch report generation progress
+  const [batchProgress, setBatchProgress] = useState<{ current: number; total: number; sessionId: number } | null>(null);
+  const [showBatchConfirmDialog, setShowBatchConfirmDialog] = useState(false);
+  const [pendingBatchParams, setPendingBatchParams] = useState<{ startDate?: string; endDate?: string; customerName?: string } | null>(null);
+  const [batchReportCount, setBatchReportCount] = useState<number | null>(null);
   const [recordsData, setRecordsData] = useState<any>(null);
   const [recordsLoading, setRecordsLoading] = useState(false);
   const [expandedRecord, setExpandedRecord] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<'weighing' | 'customers' | 'records' | 'import'>('weighing');
   
-  // 导入功能状态
+  // Import function state
   const [isImporting, setIsImporting] = useState(false);
   const [importResult, setImportResult] = useState<any>(null);
   const [importProgress, setImportProgress] = useState<{
@@ -404,7 +774,7 @@ function App() {
     message: string;
   } | null>(null);
   
-  // 生物识别功能状态
+  // Biometric function state
   const [showCameraCapture, setShowCameraCapture] = useState(false);
   const [showFingerprintCapture, setShowFingerprintCapture] = useState(false);
   const [showSignatureCapture, setShowSignatureCapture] = useState(false);
@@ -412,38 +782,38 @@ function App() {
   const [biometricImageCache, setBiometricImageCache] = useState<{ [key: string]: string }>({});
   const [biometricImageErrors, setBiometricImageErrors] = useState<{ [key: string]: boolean }>({});
   
-  // 设置功能状态
+  // Settings function state
   const [showSettings, setShowSettings] = useState(false);
   const [showMetalManagement, setShowMetalManagement] = useState(false);
 
-  // 称重表单状态
+  // Weighing form state
   const [weighingForm, setWeighingForm] = useState({
     customer_id: '',
     metal_type_id: '',
-    grossWeight: '', // 总重量
-    tareWeight: '', // 皮重
-    netWeight: '', // 净重（自动计算）
-    unitPrice: '', // 单价
-    price: '', // 价格（自动计算）
+    grossWeight: '', // Gross weight
+    tareWeight: '', // Tare weight
+    netWeight: '', // Net weight (auto calculated)
+    unitPrice: '', // Unit price
+    price: '', // Price (auto calculated)
     notes: ''
   });
   const [metalList, setMetalList] = useState<any[]>([]);
-  const [editingSessionId, setEditingSessionId] = useState<number | null>(null); // 正在编辑的session ID
+  const [editingSessionId, setEditingSessionId] = useState<number | null>(null); // Currently editing session ID
   
-  // Waste Photo状态（支持多张照片）
+  // Waste Photo state (supports multiple photos)
   const [showWasteCamera, setShowWasteCamera] = useState(false);
   const [wastePhotos, setWastePhotos] = useState<Array<{ id: number; path: string; preview: string }>>([]);
   
-  // 车辆信息状态
+  // Vehicle information state
   const [customerVehicles, setCustomerVehicles] = useState<any[]>([]);
   const [selectedCustomer, setSelectedCustomer] = useState<any>(null);
   
-  // Customer搜索状态
+  // Customer search state
   const [customerSearchQuery, setCustomerSearchQuery] = useState('');
   const [customerSearchResults, setCustomerSearchResults] = useState<any[]>([]);
   const [showCustomerDropdown, setShowCustomerDropdown] = useState(false);
 
-  // 客户表单状态
+  // Customer form state
   const [customerForm, setCustomerForm] = useState({
     name: '',
     phone: '',
@@ -455,16 +825,16 @@ function App() {
     hair_color: ''
   });
   
-  // 驾照照片状态
+  // Driver license photo state
   const [licensePhotoPath, setLicensePhotoPath] = useState<string | null>(null);
   const [licensePhotoPreview, setLicensePhotoPreview] = useState<string | null>(null);
 
-  // 检查登录状态
+  // Check login status
   useEffect(() => {
     checkLoginStatus();
   }, []);
 
-  // 当切换到Records标签时加载数据
+  // Load data when switching to Records tab
   useEffect(() => {
     if (activeTab === 'records' && isLoggedIn) {
       loadRecordsData(1);
@@ -472,7 +842,7 @@ function App() {
   }, [activeTab, isLoggedIn]);
 
 
-  // 加载数据
+  // Load data
   useEffect(() => {
     if (isLoggedIn) {
       loadData();
@@ -492,11 +862,11 @@ function App() {
         setIsLoggedIn(true);
       }
     } catch (error) {
-      console.error('检查登录状态失败:', error);
+      console.error('Failed to check login status:', error);
     }
   };
 
-  // 加载unfinished记录数量
+  // Load unfinished record count
   const loadUnfinishedCount = async () => {
     try {
       const count = await window.electronAPI.weighingSessions.getUnfinishedCount();
@@ -518,14 +888,14 @@ function App() {
       setMetalTypes(metalTypesData);
       setWeighings(weighingsData);
       
-      // 加载unfinished数量
+      // Load unfinished count
       await loadUnfinishedCount();
     } catch (error) {
       console.error('Failed to load data:', error);
     }
   };
 
-  // 加载分页客户列表
+  // Load paginated customer list
   const loadCustomerList = async (page: number = customerPage, searchQuery: string = customerListSearchQuery) => {
     try {
       setCustomerListLoading(true);
@@ -549,7 +919,7 @@ function App() {
     }
   };
 
-  // Customer搜索逻辑（用于称重页面的快速搜索）
+  // Customer search logic (for quick search on weighing page)
   useEffect(() => {
     const searchCustomers = async () => {
       if (!customerSearchQuery.trim()) {
@@ -567,16 +937,16 @@ function App() {
       }
     };
 
-    // 防抖：延迟300ms执行搜索
+    // Debounce: delay 300ms before executing search
     const timeoutId = setTimeout(searchCustomers, 300);
     return () => clearTimeout(timeoutId);
   }, [customerSearchQuery]);
 
-  // 搜索客户列表（防抖）
+  // Search customer list (debounced)
   useEffect(() => {
     const timeoutId = setTimeout(() => {
       if (activeTab === 'customers') {
-        setCustomerPage(1); // 搜索时重置到第一页
+        setCustomerPage(1); // Reset to first page when searching
         loadCustomerList(1, customerListSearchQuery);
       }
     }, 300);
@@ -585,7 +955,7 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [customerListSearchQuery]);
 
-  // 加载客户车辆信息
+  // Load customer vehicle information
   const loadCustomerVehicles = async (customerId: number) => {
     try {
       const vehicles = await window.electronAPI.vehicles.getByCustomerId(customerId);
@@ -602,7 +972,7 @@ function App() {
     }
   };
 
-  // 加载客户驾照照片
+  // Load customer driver license photo
   const loadCustomerLicensePhoto = async (customerId: number, photoPath: string | null) => {
     if (!photoPath) {
       setCustomerLicensePhotos(prev => ({
@@ -629,7 +999,7 @@ function App() {
     }
   };
 
-  // 上传客户驾照照片
+  // Upload customer driver license photo
   const handleUploadCustomerLicensePhoto = async (customerId: number) => {
     try {
       const filePath = await window.electronAPI.file.selectImage();
@@ -657,12 +1027,12 @@ function App() {
         alert('Failed to read image file');
       }
     } catch (error) {
-      console.error('上传驾照照片失败:', error);
+      console.error('Failed to upload driver license photo:', error);
       alert('Failed to upload license photo');
     }
   };
 
-  // 打开添加车辆模态框
+  // Open add vehicle modal
   const handleOpenAddVehicleModal = (customerId: number) => {
     setAddVehicleCustomerId(customerId);
     setVehicleForm({
@@ -675,12 +1045,12 @@ function App() {
     setShowAddVehicleModal(true);
   };
 
-  // 添加车辆
+  // Add vehicle
   const handleAddVehicle = async () => {
     if (!addVehicleCustomerId) return;
     
     if (!vehicleForm.license_plate.trim()) {
-      alert('Please enter license plate');
+      showError('Please enter license plate');
       return;
     }
 
@@ -709,11 +1079,11 @@ function App() {
       });
     } catch (error) {
       console.error('Failed to add vehicle:', error);
-      alert('Failed to add vehicle');
+      showError('Failed to add vehicle');
     }
   };
 
-  // 当切换到Customers标签时加载第一页
+  // Load first page when switching to Customers tab
   useEffect(() => {
     if (activeTab === 'customers') {
       loadCustomerList(1, customerListSearchQuery);
@@ -721,7 +1091,7 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
 
-  // 当切换到Records标签时更新unfinished数量
+  // Update unfinished count when switching to Records tab
   useEffect(() => {
     if (activeTab === 'records') {
       loadUnfinishedCount();
@@ -729,23 +1099,24 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
 
-  // 加载Records数据（分页）
-  const loadRecordsData = async (page = 1) => {
+  // Load Records data (paginated)
+  const loadRecordsData = async (page = 1, filterOverride?: typeof recordsFilter) => {
     try {
       setRecordsLoading(true);
-      // 同时更新unfinished数量
+      // Also update unfinished count
       await loadUnfinishedCount();
+      const filter = filterOverride || recordsFilter;
       const options = {
         page,
         limit: 10,
-        startDate: recordsFilter.startDate || undefined,
-        endDate: recordsFilter.endDate || undefined,
-        customerName: recordsFilter.customerName || undefined
+        startDate: filter.startDate || undefined,
+        endDate: filter.endDate || undefined,
+        customerName: filter.customerName || undefined
       };
       
       const result = await window.electronAPI.weighings.getPaginated(options);
       setRecordsData(result);
-      setRecordsFilter(prev => ({ ...prev, page }));
+      setRecordsFilter(prev => ({ ...prev, page, ...(filterOverride ? { startDate: filter.startDate, endDate: filter.endDate } : {}) }));
     } catch (error) {
       console.error('Failed to load records data:', error);
     } finally {
@@ -753,13 +1124,47 @@ function App() {
     }
   };
 
-  // 应用筛选
+  // Apply filter
   const applyRecordsFilter = () => {
     setRecordsFilter(prev => ({ ...prev, page: 1 }));
     loadRecordsData(1);
   };
 
-  // 重置筛选
+  // 开始批量生成报告
+  const startBatchReportGeneration = async (startDate?: string, endDate?: string, customerName?: string) => {
+    try {
+      setRecordsLoading(true);
+      setBatchProgress({ current: 0, total: 0, sessionId: 0 });
+      
+      // 设置进度监听
+      const progressCallback = (progress: { current: number; total: number; sessionId: number }) => {
+        setBatchProgress(progress);
+      };
+      
+      (window.electronAPI as any).report.onBatchProgress(progressCallback);
+      
+      try {
+        await (window.electronAPI as any).report.generatePoliceReportsBatch(
+          startDate,
+          endDate,
+          customerName
+        );
+        
+        // PDF will automatically open in new window, no popup needed
+      } finally {
+        (window.electronAPI as any).report.removeBatchProgressListener(progressCallback);
+        setBatchProgress(null);
+      }
+    } catch (error: any) {
+      console.error('Failed to generate batch police reports:', error);
+      alert(`Failed to generate reports: ${error.message || 'Unknown error'}`);
+      setBatchProgress(null);
+    } finally {
+      setRecordsLoading(false);
+    }
+  };
+
+  // Reset filter
   const resetRecordsFilter = () => {
     setRecordsFilter({
       startDate: '',
@@ -772,6 +1177,54 @@ function App() {
 
   const handleLoginSuccess = async () => {
     await checkLoginStatus();
+    
+    // 监听自动同步完成事件
+    (window.electronAPI as any).sync.onAutoSyncComplete((data: { success: boolean; message: string; syncedRecords?: number }) => {
+      if (data.success) {
+        showSuccess(`Data synchronized from cloud successfully! ${data.syncedRecords || 0} records downloaded.`);
+        // 刷新所有数据
+        loadCustomerList(1, customerListSearchQuery);
+        loadRecordsData(1);
+        // 刷新金属类型等其他数据
+        // Metal types are loaded automatically when needed
+      } else {
+        showError(`Failed to sync data from cloud: ${data.message}`);
+      }
+    });
+    
+    // 监听数据刷新事件
+    (window.electronAPI as any).sync.onRefreshData(() => {
+      console.log('[Frontend] Received refresh data signal');
+      loadCustomerList(1, customerListSearchQuery);
+      loadRecordsData(1);
+      // Metal types are loaded automatically when needed
+      loadData(); // Reload all data including metal types
+    });
+    
+    // 监听过期时间更新事件
+    (window.electronAPI as any).auth.onExpirationUpdated((data: { expiresAt: string }) => {
+      console.log('[Frontend] Expiration time updated:', data.expiresAt);
+      // 重新检查登录状态以更新过期时间显示
+      checkLoginStatus();
+    });
+    
+    // 定期从服务器刷新过期时间（每5分钟），确保所有客户端显示一致
+    const refreshExpirationInterval = setInterval(() => {
+      console.log('[Frontend] Scheduled refresh: checking login status...');
+      checkLoginStatus();
+    }, 5 * 60 * 1000); // 每5分钟刷新一次
+    
+    // 窗口获得焦点时也刷新过期时间
+    const handleWindowFocus = () => {
+      console.log('[Frontend] Window focused, refreshing expiration time...');
+      checkLoginStatus();
+    };
+    window.addEventListener('focus', handleWindowFocus);
+    
+    return () => {
+      clearInterval(refreshExpirationInterval);
+      window.removeEventListener('focus', handleWindowFocus);
+    };
   };
 
   const handleLogout = async () => {
@@ -784,25 +1237,25 @@ function App() {
       setMetalTypes([]);
       setWeighings([]);
     } catch (error) {
-      console.error('退出登录失败:', error);
+      console.error('Failed to logout:', error);
     }
   };
 
-  // 添加金属到清单
+  // Add metal to list
   const handleAddToMetalList = () => {
     if (!weighingForm.metal_type_id || !weighingForm.netWeight || parseFloat(weighingForm.netWeight) <= 0) {
-      alert('Please fill in metal type and ensure net weight is greater than 0');
+      showError('Please fill in metal type and ensure net weight is greater than 0');
       return;
     }
 
     if (!weighingForm.unitPrice || parseFloat(weighingForm.unitPrice) <= 0) {
-      alert('Please fill in unit price');
+      showError('Please fill in unit price');
       return;
     }
 
     const metalType = metalTypes.find(mt => mt.id === parseInt(weighingForm.metal_type_id));
     if (!metalType) {
-      alert('Please select a valid metal type');
+      showError('Please select a valid metal type');
       return;
     }
 
@@ -811,19 +1264,20 @@ function App() {
     const price = parseFloat(weighingForm.price) || netWeight * unitPrice;
 
     const metalItem = {
-      id: Date.now(), // 临时ID
+      id: Date.now(), // Temporary ID
       metal_type_id: parseInt(weighingForm.metal_type_id),
       metal_type_name: metalType.name,
       grossWeight: parseFloat(weighingForm.grossWeight) || 0,
       tareWeight: parseFloat(weighingForm.tareWeight) || 0,
-      weight: netWeight, // 使用净重作为weight
+      weight: netWeight, // Use net weight as weight
       unit_price: unitPrice,
-      total_amount: price
+      total_amount: price,
+      photos: [...wastePhotos] // Associate current photos with this metal item
     };
 
     setMetalList([...metalList, metalItem]);
     
-    // 重置金属类型、重量和价格相关字段，保留客户和备注
+    // Reset metal type, weight and price related fields, and photos, keep customer and notes
     setWeighingForm({
       ...weighingForm,
       metal_type_id: '',
@@ -833,14 +1287,24 @@ function App() {
       unitPrice: '',
       price: ''
     });
+    setWastePhotos([]); // Clear photos after adding to list
   };
 
-  // 从清单中删除金属
+  // Remove metal from list
   const handleRemoveFromMetalList = (id: number) => {
     setMetalList(metalList.filter(item => item.id !== id));
   };
 
-  // 处理Waste Photo捕获
+  // Delete photo from metal item
+  const handleDeleteMetalItemPhoto = (metalItemId: number, photoId: number) => {
+    setMetalList(prev => prev.map(item => 
+      item.id === metalItemId 
+        ? { ...item, photos: (item.photos || []).filter((photo: any) => photo.id !== photoId) }
+        : item
+    ));
+  };
+
+  // Handle Waste Photo capture
   const handleWastePhotoCaptured = async (imageData: ArrayBuffer) => {
     try {
       const blob = new Blob([imageData], { type: 'image/jpeg' });
@@ -869,7 +1333,7 @@ function App() {
                 console.error('Failed to save waste photo:', error);
                 // 如果保存失败，移除预览
                 setWastePhotos(current => current.filter(photo => photo.id !== photoId));
-                alert('Failed to save waste photo');
+                showError('Failed to save waste photo');
               }
             })();
             
@@ -882,7 +1346,7 @@ function App() {
           });
         } catch (error) {
           console.error('Failed to process waste photo:', error);
-          alert('Failed to process waste photo');
+          showError('Failed to process waste photo');
         }
       };
       
@@ -894,12 +1358,12 @@ function App() {
     }
   };
 
-  // 删除Waste Photo
+  // Delete Waste Photo
   const handleDeleteWastePhoto = (id: number) => {
     setWastePhotos(prev => prev.filter(photo => photo.id !== id));
   };
 
-  // 自动计算净重（总重量 - 皮重）
+  // Auto calculate net weight (gross weight - tare weight)
   useEffect(() => {
     const gross = parseFloat(weighingForm.grossWeight) || 0;
     const tare = parseFloat(weighingForm.tareWeight) || 0;
@@ -918,7 +1382,7 @@ function App() {
     }
   }, [weighingForm.grossWeight, weighingForm.tareWeight]);
 
-  // 自动计算价格（净重 × 单价）
+  // Auto calculate price (net weight × unit price)
   useEffect(() => {
     const net = parseFloat(weighingForm.netWeight) || 0;
     const unitPrice = parseFloat(weighingForm.unitPrice) || 0;
@@ -937,7 +1401,7 @@ function App() {
     }
   }, [weighingForm.netWeight, weighingForm.unitPrice]);
 
-  // 选择Metal Type后自动填充Unit Price
+  // Auto fill Unit Price after selecting Metal Type
   useEffect(() => {
     if (weighingForm.metal_type_id) {
       const metalType = metalTypes.find(mt => mt.id === parseInt(weighingForm.metal_type_id));
@@ -950,7 +1414,7 @@ function App() {
     }
   }, [weighingForm.metal_type_id, metalTypes]);
 
-  // 处理Customer选择变化
+  // Handle Customer selection change
   useEffect(() => {
     const loadCustomerData = async () => {
       if (weighingForm.customer_id) {
@@ -978,8 +1442,8 @@ function App() {
           setCustomerVehicles([]);
         }
         
-        // 不加载之前的生物识别数据，每次都需要重新采集
-        // 清空biometric数据，让用户重新采集
+        // Don't load previous biometric data, need to re-capture each time
+        // Clear biometric data to let user re-capture
         setBiometricData(null);
         setBiometricImageCache({});
         setBiometricImageErrors({});
@@ -987,7 +1451,7 @@ function App() {
         setSelectedCustomer(null);
         setCustomerVehicles([]);
         setBiometricData(null);
-        // 不清空搜索查询，让用户保留搜索历史
+        // Don't clear search query, let user keep search history
       }
     };
     
@@ -995,20 +1459,38 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [weighingForm.customer_id]);
 
-  // 处理称重保存
+  // Helper function to show error message
+  const showError = (message: string) => {
+    console.log('Showing error message:', message);
+    setErrorMessage(message);
+    setTimeout(() => setErrorMessage(''), 5000); // Auto clear after 5 seconds
+  };
+
+  // Helper function to show success message
+  const showSuccess = (message: string) => {
+    console.log('Showing success message:', message);
+    setSuccessMessage(message);
+    setTimeout(() => setSuccessMessage(''), 5000); // Auto clear after 5 seconds
+  };
+
+  // Handle weighing save
   const handleWeighing = async () => {
+    console.log('[Submit] handleWeighing called');
+    
     if (metalList.length === 0) {
-      alert('Please add at least one metal item to the list');
+      showError('Please add at least one metal item to the list');
       return;
     }
 
-    // 检查是否选择了客户
+    // Check if customer is selected
     if (!weighingForm.customer_id) {
-      alert('Please select a customer before submitting');
+      showError('Please select a customer before submitting');
       return;
     }
 
-    // 检查biometric数据是否完整
+    console.log('[Submit] Validations passed, starting save process...');
+
+    // Check if biometric data is complete
     let isBiometricComplete = false;
     if (biometricData) {
       const hasFace = !!biometricData.face_image_path;
@@ -1024,6 +1506,7 @@ function App() {
       
       // 如果是继续编辑现有session，更新它；否则创建新的
       if (editingSessionId) {
+        console.log('[Submit] Updating existing session:', editingSessionId);
         sessionId = editingSessionId;
         // 更新session的notes和status
         await window.electronAPI.weighingSessions.update(sessionId, {
@@ -1033,36 +1516,51 @@ function App() {
         // 删除该session的所有现有weighings，然后重新添加
         await window.electronAPI.weighings.deleteBySession(sessionId);
       } else {
+        console.log('[Submit] Creating new session...');
         // 创建新的称重会话
         const sessionResult = await window.electronAPI.weighingSessions.create({
           customer_id: parseInt(weighingForm.customer_id),
           notes: weighingForm.notes,
           status: status
         });
-        sessionId = sessionResult.lastInsertRowid;
+        console.log('[Submit] Session created, full result:', JSON.stringify(sessionResult, null, 2));
+        // 云端数据库返回 { id: ... }，本地数据库返回 { lastInsertRowid: ... }
+        sessionId = sessionResult?.id || sessionResult?.lastInsertRowid;
+        if (!sessionId) {
+          console.error('[Submit] Session result does not contain id or lastInsertRowid:', sessionResult);
+          throw new Error(`Failed to get session ID from create result. Result: ${JSON.stringify(sessionResult)}`);
+        }
+        console.log('[Submit] Session ID:', sessionId);
       }
 
       // 计算总金额
       let totalAmount = 0;
 
-      // 为每个金属创建称重记录
+      // Create weighing record for each metal
+      console.log('[Submit] Creating weighing records for', metalList.length, 'metal items...');
       for (let i = 0; i < metalList.length; i++) {
         const metalItem = metalList[i];
-        // 如果是第一个item且有waste photos，关联第一张已保存的照片
-        const savedPhotos = wastePhotos.filter(photo => photo.path); // 只使用已保存的照片
-        const productPhotoPath = (i === 0 && savedPhotos.length > 0) ? savedPhotos[0].path : null;
+        console.log('[Submit] Creating weighing record', i + 1, 'of', metalList.length, ':', metalItem);
+        // Use first saved photo from this metal item's photos
+        const savedPhotos = (metalItem.photos || []).filter((photo: any) => photo.path);
+        const productPhotoPath = savedPhotos.length > 0 ? savedPhotos[0].path : null;
         
-        await window.electronAPI.weighings.create({
+        const weighingData = {
           session_id: sessionId,
           waste_type_id: metalItem.metal_type_id,
-          weight: metalItem.weight,
-          unit_price: metalItem.unit_price,
-          total_amount: metalItem.total_amount,
+          weight: parseFloat(metalItem.weight) || 0,
+          unit_price: parseFloat(metalItem.unit_price) || 0,
+          total_amount: parseFloat(metalItem.total_amount) || 0,
           product_photo_path: productPhotoPath
-        });
+        };
+        console.log('[Submit] Weighing data:', weighingData);
+        
+        await window.electronAPI.weighings.create(weighingData);
         totalAmount += metalItem.total_amount;
+        console.log('[Submit] Weighing record', i + 1, 'created successfully');
       }
 
+      console.log('[Submit] Updating session total amount:', totalAmount);
       // 更新会话总金额
       await window.electronAPI.weighingSessions.updateTotal(sessionId, totalAmount);
       
@@ -1084,27 +1582,107 @@ function App() {
       setCustomerSearchQuery('');
       setEditingSessionId(null); // 清除编辑状态
       
+      console.log('[Submit] Reloading data...');
       // 重新加载数据
       loadData();
       // 更新unfinished数量
       await loadUnfinishedCount();
-      alert(`Successfully saved weighing session with ${metalList.length} metal item(s)!`);
-    } catch (error) {
-      console.error('Failed to save weighing session:', error);
-      alert('Failed to save weighing session, please try again');
+      console.log('[Submit] Success!');
+      showSuccess(`Successfully saved weighing session with ${metalList.length} metal item(s)!`);
+      
+      // 恢复焦点，避免输入框被锁住
+      setTimeout(() => {
+        document.body.focus();
+        if (document.activeElement && document.activeElement instanceof HTMLElement) {
+          document.activeElement.blur();
+        }
+      }, 100);
+    } catch (error: any) {
+      console.error('[Submit] Failed to save weighing session:', error);
+      console.error('[Submit] Error details:', {
+        message: error?.message,
+        stack: error?.stack,
+        name: error?.name
+      });
+      const errorMessage = error?.message || 'Failed to save weighing session, please try again';
+      showError(`Failed to save weighing session: ${errorMessage}`);
+      
+      // 恢复焦点
+      setTimeout(() => {
+        document.body.focus();
+        if (document.activeElement && document.activeElement instanceof HTMLElement) {
+          document.activeElement.blur();
+        }
+      }, 100);
     }
   };
 
-  // 添加客户
-  const handleAddCustomer = async () => {
-    if (!customerForm.name) {
-      alert('Please enter customer name');
+  // Quick add customer (from weighing page)
+  const handleQuickAddCustomer = async () => {
+    if (!quickAddCustomerForm.name.trim()) {
+      showError('Please enter customer name');
       return;
     }
 
     try {
-      // 直接使用临时照片路径（如果存在）
-      // 临时照片已经保存到文件系统，只需要将路径保存到数据库
+      const customerData = {
+        name: quickAddCustomerForm.name.trim(),
+        phone: quickAddCustomerForm.phone.trim() || undefined,
+        address: quickAddCustomerForm.address.trim() || undefined,
+        license_number: '',
+        id_expiration: '',
+        height: '',
+        weight: '',
+        hair_color: '',
+        license_photo_path: null
+      };
+      
+      const result = await window.electronAPI.customers.create(customerData);
+      
+      // Clear form
+      setQuickAddCustomerForm({ name: '', phone: '', address: '' });
+      setShowQuickAddCustomerModal(false);
+      
+      // Reload customer list and search
+      loadData();
+      loadCustomerList(customerPage, customerListSearchQuery);
+      
+      // Select the newly added customer
+      if (result.lastInsertRowid) {
+        try {
+          const newCustomer = await window.electronAPI.customers.getById(result.lastInsertRowid);
+          if (newCustomer) {
+            setSelectedCustomer(newCustomer);
+            setWeighingForm(prev => ({
+              ...prev,
+              customer_id: newCustomer.id.toString()
+            }));
+            setCustomerSearchQuery(newCustomer.name);
+            setCustomerSearchResults([]);
+          }
+        } catch (error) {
+          console.error('Failed to load newly added customer:', error);
+          // Still show success, customer was added
+        }
+      }
+      
+      showSuccess('Customer added successfully!');
+    } catch (error) {
+      console.error('Failed to add customer:', error);
+      showError('Failed to add customer, please try again');
+    }
+  };
+
+  // Add customer
+  const handleAddCustomer = async () => {
+    if (!customerForm.name) {
+      showError('Please enter customer name');
+      return;
+    }
+
+    try {
+      // Directly use temporary photo path (if exists)
+      // Temporary photo already saved to file system, only need to save path to database
       const customerData = {
         ...customerForm,
         license_photo_path: licensePhotoPath || null
@@ -1125,12 +1703,12 @@ function App() {
       setLicensePhotoPath(null);
       setLicensePhotoPreview(null);
       loadData();
-      // 重新加载客户列表（保持当前页和搜索条件）
+      // Reload customer list (keep current page and search conditions)
       loadCustomerList(customerPage, customerListSearchQuery);
-      alert('Customer added successfully!');
+      showSuccess('Customer added successfully!');
     } catch (error) {
       console.error('Failed to add customer:', error);
-      alert('Failed to add customer, please try again');
+      showError('Failed to add customer, please try again');
     }
   };
 
@@ -1152,7 +1730,7 @@ function App() {
         alert('Failed to read image file');
       }
     } catch (error) {
-      console.error('上传驾照照片失败:', error);
+      console.error('Failed to upload driver license photo:', error);
       alert('Failed to upload license photo');
     }
   };
@@ -1194,16 +1772,20 @@ function App() {
       if (result.success) {
         // 重新加载数据
         loadData();
+        // 如果当前在客户列表页面，刷新客户列表
+        if (activeTab === 'customers') {
+          loadCustomerList(1, customerListSearchQuery);
+        }
         // 2秒后关闭进度窗口
         setTimeout(() => {
           setImportProgress(null);
         }, 2000);
       }
     } catch (error) {
-      console.error('导入客户数据失败:', error);
+      console.error('Failed to import customer data:', error);
       setImportResult({
         success: false,
-        message: `导入失败: ${error}`,
+        message: `Import failed: ${error}`,
         importedCustomers: 0,
         importedVehicles: 0,
         errors: [String(error)]
@@ -1258,10 +1840,10 @@ function App() {
         }, 2000);
       }
     } catch (error) {
-      console.error('导入车辆数据失败:', error);
+      console.error('Failed to import vehicle data:', error);
       setImportResult({
         success: false,
-        message: `导入失败: ${error}`,
+        message: `Import failed: ${error}`,
         importedCustomers: 0,
         importedVehicles: 0,
         errors: [String(error)]
@@ -1273,7 +1855,7 @@ function App() {
     }
   };
 
-  // 生物识别功能
+  // Biometric function
   const handleCaptureFace = () => {
     setShowCameraCapture(true);
   };
@@ -1295,8 +1877,8 @@ function App() {
         );
         loadBiometricData();
       } catch (error) {
-        console.error('保存面部照片失败:', error);
-        alert('保存面部照片失败');
+        console.error('Failed to save face photo:', error);
+        alert('Failed to save face photo');
       }
     }
   };
@@ -1311,8 +1893,8 @@ function App() {
         );
         loadBiometricData();
       } catch (error) {
-        console.error('保存指纹数据失败:', error);
-        alert('保存指纹数据失败');
+        console.error('Failed to save fingerprint data:', error);
+        alert('Failed to save fingerprint data');
       }
     }
   };
@@ -1320,7 +1902,7 @@ function App() {
   const handleSignatureCaptured = async (imageData: ArrayBuffer) => {
     if (weighingForm.customer_id) {
       try {
-        // 保存签名图片到文件系统（使用专门的签名保存方法）
+        // Save signature image to file system (using dedicated signature save method)
         const signaturePath = await window.electronAPI.biometric.saveSignatureImage(
           parseInt(weighingForm.customer_id),
           imageData
@@ -1373,21 +1955,146 @@ function App() {
     }
   };
 
-  // 如果未登录，显示登录界面
+  // If not logged in, show login interface
   if (!isLoggedIn) {
     return <LoginForm onLoginSuccess={handleLoginSuccess} />;
   }
 
   return (
+    <>
+      {/* Toast Messages - Render outside app container to avoid z-index issues */}
+      {errorMessage && (
+        <div 
+          style={{
+            position: 'fixed',
+            top: '20px',
+            right: '20px',
+            backgroundColor: '#f44336',
+            color: 'white',
+            padding: '16px 24px',
+            borderRadius: '8px',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+            zIndex: 999999,
+            maxWidth: '400px',
+            minWidth: '300px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            animation: 'slideIn 0.3s ease-out',
+            pointerEvents: 'auto',
+            fontFamily: 'Arial, sans-serif',
+            fontSize: '14px',
+            fontWeight: '500'
+          }}
+        >
+          <span style={{ flex: 1, marginRight: '16px' }}>{errorMessage}</span>
+          <button
+            onClick={() => setErrorMessage('')}
+            style={{
+              background: 'rgba(255,255,255,0.2)',
+              border: 'none',
+              color: 'white',
+              fontSize: '20px',
+              fontWeight: 'bold',
+              cursor: 'pointer',
+              padding: '0',
+              width: '24px',
+              height: '24px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0,
+              borderRadius: '4px',
+              transition: 'background 0.2s'
+            }}
+            onMouseOver={(e) => e.currentTarget.style.background = 'rgba(255,255,255,0.3)'}
+            onMouseOut={(e) => e.currentTarget.style.background = 'rgba(255,255,255,0.2)'}
+          >
+            ×
+          </button>
+        </div>
+      )}
+      {successMessage && (
+        <div 
+          style={{
+            position: 'fixed',
+            top: errorMessage ? '80px' : '20px',
+            right: '20px',
+            backgroundColor: '#4caf50',
+            color: 'white',
+            padding: '16px 24px',
+            borderRadius: '8px',
+            boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
+            zIndex: 999999,
+            maxWidth: '400px',
+            minWidth: '300px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            animation: 'slideIn 0.3s ease-out',
+            pointerEvents: 'auto',
+            fontFamily: 'Arial, sans-serif',
+            fontSize: '14px',
+            fontWeight: '500'
+          }}
+        >
+          <span style={{ flex: 1, marginRight: '16px' }}>{successMessage}</span>
+          <button
+            onClick={() => setSuccessMessage('')}
+            style={{
+              background: 'rgba(255,255,255,0.2)',
+              border: 'none',
+              color: 'white',
+              fontSize: '20px',
+              fontWeight: 'bold',
+              cursor: 'pointer',
+              padding: '0',
+              width: '24px',
+              height: '24px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0,
+              borderRadius: '4px',
+              transition: 'background 0.2s'
+            }}
+            onMouseOver={(e) => e.currentTarget.style.background = 'rgba(255,255,255,0.3)'}
+            onMouseOut={(e) => e.currentTarget.style.background = 'rgba(255,255,255,0.2)'}
+          >
+            ×
+          </button>
+        </div>
+      )}
     <div className="app">
       <header className="header">
         <div className="header-left">
           <h1>Waste Recycling Scale System</h1>
           <div className="user-info">
             <span>Welcome, {currentUser?.username} - {currentActivation?.company_name}</span>
+            {currentActivation?.expires_at && (
+              <div style={{ fontSize: '12px', color: '#fff', marginTop: '4px' }}>
+                Valid until: {new Date(currentActivation.expires_at).toLocaleDateString('en-US', { year: 'numeric', month: '2-digit', day: '2-digit' })}
+              </div>
+            )}
           </div>
         </div>
         <div className="header-right">
+          {appVersion && (
+            <span 
+              style={{
+                fontSize: '11px',
+                color: 'rgba(255, 255, 255, 0.7)',
+                marginRight: '8px',
+                padding: '4px 8px',
+                backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                borderRadius: '4px',
+                fontFamily: 'monospace'
+              }}
+              title={`Version ${appVersion}`}
+            >
+              v{appVersion}
+            </span>
+          )}
           <button 
             onClick={() => setShowSettings(true)} 
             className="settings-btn"
@@ -1458,8 +2165,25 @@ function App() {
 
       <main className="main">
         {activeTab === 'weighing' && (
-          <div className="weighing-section" style={{ display: 'flex', gap: '20px', alignItems: 'flex-start' }}>
-            {/* 左侧：称重部分 */}
+          <div className="weighing-section" style={{ display: 'flex', gap: '20px', alignItems: 'flex-start', position: 'relative' }}>
+            {/* Save button - placed at top right */}
+            <button 
+              onClick={handleWeighing} 
+              className="btn-primary"
+              disabled={metalList.length === 0}
+              style={{ 
+                position: 'absolute',
+                top: '0',
+                right: '0',
+                fontSize: '16px',
+                padding: '10px 30px',
+                zIndex: 10
+              }}
+            >
+              Save
+            </button>
+            
+            {/* Left: Weighing section */}
             <div style={{ flex: 1, minWidth: '400px' }}>
               <h2>Weighing</h2>
               
@@ -1468,7 +2192,9 @@ function App() {
                 <select 
                   value={weighingForm.metal_type_id}
                   onChange={(e) => setWeighingForm({...weighingForm, metal_type_id: e.target.value})}
+                  onDoubleClick={() => setShowMetalManagement(true)}
                   required
+                  title="Double-click to manage metal types"
                 >
                   <option value="">Select Metal Type</option>
                   {metalTypes.map(metalType => (
@@ -1571,7 +2297,7 @@ function App() {
                     maxWidth: '100%'
                   }}>
                     {wastePhotos.map((photo) => {
-                      // 根据照片数量动态调整缩略图大小
+                      // Dynamically adjust thumbnail size based on photo count
                       const photoCount = wastePhotos.length;
                       let thumbnailSize = '150px';
                       if (photoCount > 6) {
@@ -1625,7 +2351,7 @@ function App() {
                               padding: 0,
                               boxShadow: '0 2px 4px rgba(0,0,0,0.2)'
                             }}
-                            title="删除照片"
+                            title="Delete Photo"
                           >
                             ×
                           </button>
@@ -1636,7 +2362,7 @@ function App() {
                 )}
               </div>
 
-              {/* 添加到清单按钮 */}
+              {/* Add to list button */}
               <div className="form-group">
                 <button 
                   onClick={handleAddToMetalList} 
@@ -1648,26 +2374,89 @@ function App() {
                 </button>
               </div>
 
-              {/* 金属清单显示 */}
+              {/* Metal list display */}
               {metalList.length > 0 && (
                 <div className="metal-list-section" style={{ marginTop: '20px' }}>
                   <h3>Metal List ({metalList.length} items)</h3>
                   <div className="metal-list">
                     {metalList.map((item, index) => (
-                      <div key={item.id} className="metal-list-item">
-                        <div className="metal-item-info">
-                          <span className="metal-type">{item.metal_type_name}</span>
-                          <span className="metal-weight">{item.weight.toFixed(3)} lb</span>
-                          <span className="metal-price">${item.unit_price}/lb</span>
-                          <span className="metal-total">${item.total_amount.toFixed(2)}</span>
+                      <div key={item.id} className="metal-list-item" style={{ marginBottom: '15px', padding: '15px', border: '1px solid #e0e0e0', borderRadius: '8px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: item.photos && item.photos.length > 0 ? '10px' : '0' }}>
+                          <div className="metal-item-info" style={{ flex: 1 }}>
+                            <span className="metal-type">{item.metal_type_name}</span>
+                            <span className="metal-weight">{item.weight.toFixed(3)} lb</span>
+                            <span className="metal-price">${item.unit_price}/lb</span>
+                            <span className="metal-total">${item.total_amount.toFixed(2)}</span>
+                          </div>
+                          <button 
+                            onClick={() => handleRemoveFromMetalList(item.id)}
+                            className="remove-btn"
+                            type="button"
+                          >
+                            ✕
+                          </button>
                         </div>
-                        <button 
-                          onClick={() => handleRemoveFromMetalList(item.id)}
-                          className="remove-btn"
-                          type="button"
-                        >
-                          ✕
-                        </button>
+                        {/* Display photos for this metal item */}
+                        {item.photos && item.photos.length > 0 && (
+                          <div style={{ 
+                            display: 'flex', 
+                            gap: '8px', 
+                            flexWrap: 'wrap',
+                            marginTop: '10px',
+                            paddingTop: '10px',
+                            borderTop: '1px solid #f0f0f0'
+                          }}>
+                            {item.photos.map((photo: any) => (
+                              <div 
+                                key={photo.id} 
+                                style={{ 
+                                  position: 'relative',
+                                  width: '100px',
+                                  height: '100px',
+                                  flexShrink: 0
+                                }}
+                              >
+                                <img 
+                                  src={photo.preview || photo.path} 
+                                  alt="Waste Photo" 
+                                  style={{ 
+                                    width: '100%',
+                                    height: '100%',
+                                    objectFit: 'cover',
+                                    borderRadius: '4px',
+                                    border: '1px solid #ddd'
+                                  }}
+                                />
+                                <button
+                                  onClick={() => handleDeleteMetalItemPhoto(item.id, photo.id)}
+                                  style={{
+                                    position: 'absolute',
+                                    top: '4px',
+                                    right: '4px',
+                                    width: '24px',
+                                    height: '24px',
+                                    borderRadius: '50%',
+                                    backgroundColor: 'rgba(255, 0, 0, 0.8)',
+                                    color: 'white',
+                                    border: 'none',
+                                    cursor: 'pointer',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    justifyContent: 'center',
+                                    fontSize: '14px',
+                                    fontWeight: 'bold',
+                                    lineHeight: '1',
+                                    padding: 0,
+                                    boxShadow: '0 2px 4px rgba(0,0,0,0.2)'
+                                  }}
+                                  title="Delete Photo"
+                                >
+                                  ×
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -1678,14 +2467,14 @@ function App() {
               )}
             </div>
 
-            {/* 右侧：Customer部分 */}
+            {/* Right: Customer section */}
             <div style={{ flex: 1, minWidth: '400px' }}>
               <h2>Customer</h2>
               
               <div className="form-group" style={{ position: 'relative' }}>
                 <label>Customer:</label>
                 
-                {/* 搜索输入框 */}
+                {/* Search input box */}
                 <input
                   type="text"
                   value={customerSearchQuery}
@@ -1699,10 +2488,15 @@ function App() {
                     }
                   }}
                   onBlur={() => {
-                    // 延迟关闭，允许点击下拉项
+                    // Delay closing to allow clicking dropdown items
                     setTimeout(() => setShowCustomerDropdown(false), 200);
                   }}
-                  placeholder="Quick search by number or name..."
+                  onDoubleClick={() => {
+                    setShowQuickAddCustomerModal(true);
+                    setQuickAddCustomerForm({ name: '', phone: '', address: '' });
+                  }}
+                  placeholder="Quick search by number or name... (Double-click to add new customer)"
+                  title="Double-click to quickly add a new customer"
                   style={{ 
                     width: '100%',
                     padding: '8px 12px',
@@ -1715,7 +2509,7 @@ function App() {
                   }}
                 />
                 
-                {/* 搜索结果下拉列表 */}
+                {/* Search results dropdown list */}
                 {showCustomerDropdown && customerSearchResults.length > 0 && (
                   <div style={{
                     position: 'absolute',
@@ -1784,7 +2578,7 @@ function App() {
                   </div>
                 )}
                 
-                {/* 原来的下拉选择框 */}
+                {/* Original dropdown selection box */}
                 <select 
                   value={weighingForm.customer_id}
                   onChange={(e) => {
@@ -1810,7 +2604,7 @@ function App() {
                 </select>
               </div>
 
-              {/* 显示Customer信息 */}
+              {/* Display Customer information */}
               {selectedCustomer && (
                 <div style={{ marginTop: '20px', padding: '15px', backgroundColor: '#f9f9f9', borderRadius: '4px' }}>
                   <h3 style={{ marginTop: 0 }}>Customer Information</h3>
@@ -1840,7 +2634,7 @@ function App() {
                 </div>
               )}
 
-              {/* 显示车辆信息 */}
+              {/* Display vehicle information */}
               {customerVehicles.length > 0 && (
                 <div style={{ marginTop: '20px', padding: '15px', backgroundColor: '#f9f9f9', borderRadius: '4px' }}>
                   <h3 style={{ marginTop: 0 }}>Vehicle Information</h3>
@@ -1987,19 +2781,6 @@ function App() {
           </div>
         )}
 
-        {/* Submit按钮 - 放在底部 */}
-        {activeTab === 'weighing' && (
-          <div style={{ marginTop: '20px', textAlign: 'center', padding: '20px', borderTop: '1px solid #ddd' }}>
-            <button 
-              onClick={handleWeighing} 
-              className="btn-primary"
-              disabled={metalList.length === 0}
-              style={{ fontSize: '18px', padding: '12px 40px' }}
-            >
-              Submit
-            </button>
-          </div>
-        )}
 
         {activeTab === 'customers' && (
           <div className="customers-section">
@@ -2085,7 +2866,7 @@ function App() {
               />
             </div>
 
-            {/* 驾照照片上传区域 */}
+            {/* Driver license photo upload area */}
             <div className="license-photo-section">
               <h3>Driver License Photo</h3>
               <div className="license-photo-controls">
@@ -2130,7 +2911,7 @@ function App() {
                 )}
               </div>
 
-              {/* 搜索框 */}
+              {/* Search box */}
               <div className="form-group" style={{ marginBottom: '20px' }}>
                 <input
                   type="text"
@@ -2154,7 +2935,7 @@ function App() {
                 />
               </div>
 
-              {/* 客户列表 */}
+              {/* Customer list */}
               {customerListLoading ? (
                 <div style={{ textAlign: 'center', padding: '40px', color: '#666' }}>
                   Loading customers...
@@ -2494,7 +3275,7 @@ function App() {
                               )}
                             </div>
 
-                            {/* 车辆信息 */}
+                            {/* Vehicle information */}
                             <div>
                               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
                                 <h4 style={{ marginTop: 0, marginBottom: 0, color: '#333' }}>Vehicles</h4>
@@ -2547,7 +3328,7 @@ function App() {
                     );
                   })}
 
-                  {/* 分页控件 */}
+                  {/* Pagination controls */}
                   {customerPagination && customerPagination.totalPages > 1 && (
                     <div style={{
                       display: 'flex',
@@ -2655,9 +3436,36 @@ function App() {
           <div className="records-section">
             <div className="records-header">
               <h2>Weighing Records</h2>
+              <button
+                onClick={async () => {
+                  try {
+                    setRecordsLoading(true);
+                    // 从云端下载最新数据
+                    const result = await (window.electronAPI as any).sync.downloadFromCloud(false);
+                    if (result.success) {
+                      // 刷新本地数据
+                      await loadRecordsData(recordsFilter.page);
+                      showSuccess(`Refreshed! ${result.syncedRecords || 0} new records downloaded.`);
+                    } else {
+                      showError(`Failed to refresh: ${result.message}`);
+                    }
+                  } catch (error: any) {
+                    console.error('Failed to refresh records:', error);
+                    showError(`Failed to refresh: ${error?.message || 'Unknown error'}`);
+                  } finally {
+                    setRecordsLoading(false);
+                  }
+                }}
+                disabled={recordsLoading}
+                className="refresh-records-btn"
+                title="Refresh records from cloud"
+              >
+                <span>🔄</span>
+                <span>{recordsLoading ? 'Refreshing...' : 'Refresh'}</span>
+              </button>
             </div>
             
-            {/* 筛选器 */}
+            {/* Filter */}
             <div className="records-filter">
               <div className="filter-row">
                 <div className="filter-group">
@@ -2665,7 +3473,15 @@ function App() {
                   <input
                     type="date"
                     value={recordsFilter.startDate}
-                    onChange={(e) => setRecordsFilter({...recordsFilter, startDate: e.target.value})}
+                    onChange={(e) => {
+                      const newStartDate = e.target.value;
+                      const newFilter = {...recordsFilter, startDate: newStartDate};
+                      setRecordsFilter(newFilter);
+                      // 如果两个日期都选择了，自动应用筛选
+                      if (newStartDate && newFilter.endDate) {
+                        loadRecordsData(1, newFilter);
+                      }
+                    }}
                   />
                 </div>
                 <div className="filter-group">
@@ -2673,7 +3489,15 @@ function App() {
                   <input
                     type="date"
                     value={recordsFilter.endDate}
-                    onChange={(e) => setRecordsFilter({...recordsFilter, endDate: e.target.value})}
+                    onChange={(e) => {
+                      const newEndDate = e.target.value;
+                      const newFilter = {...recordsFilter, endDate: newEndDate};
+                      setRecordsFilter(newFilter);
+                      // 如果两个日期都选择了，自动应用筛选
+                      if (newFilter.startDate && newEndDate) {
+                        loadRecordsData(1, newFilter);
+                      }
+                    }}
                   />
                 </div>
                 <div className="filter-group">
@@ -2686,35 +3510,33 @@ function App() {
                   />
                 </div>
                 <div className="filter-actions">
-                  <button onClick={applyRecordsFilter} className="apply-filter-btn">
-                    Apply Filter
-                  </button>
                   <button onClick={resetRecordsFilter} className="reset-filter-btn">
                     Reset
                   </button>
                   {recordsFilter.startDate && recordsFilter.endDate && (
-                    <button 
-                      onClick={async () => {
-                        try {
-                          setRecordsLoading(true);
-                          await (window.electronAPI as any).report.generateInventoryReport(
-                            recordsFilter.startDate,
-                            recordsFilter.endDate
-                          );
-                        } catch (error: any) {
-                          console.error('Failed to generate report:', error);
-                          alert(`生成报告失败: ${error.message || '未知错误'}`);
-                        } finally {
-                          setRecordsLoading(false);
-                        }
-                      }}
-                      className="generate-report-btn"
-                      disabled={recordsLoading}
-                      style={{
-                        backgroundColor: recordsLoading ? '#6c757d' : '#28a745',
-                        color: 'white',
-                        border: 'none',
-                        padding: '8px 16px',
+                    <>
+                      <button 
+                        onClick={async () => {
+                          try {
+                            setRecordsLoading(true);
+                            await (window.electronAPI as any).report.generateInventoryReport(
+                              recordsFilter.startDate,
+                              recordsFilter.endDate
+                            );
+                          } catch (error: any) {
+                            console.error('Failed to generate report:', error);
+                            alert(`Failed to generate report: ${error.message || 'Unknown error'}`);
+                          } finally {
+                            setRecordsLoading(false);
+                          }
+                        }}
+                        className="generate-report-btn"
+                        disabled={recordsLoading}
+                        style={{
+                          backgroundColor: recordsLoading ? '#6c757d' : '#28a745',
+                          color: 'white',
+                          border: 'none',
+                          padding: '8px 16px',
                         borderRadius: '4px',
                         fontSize: '14px',
                         fontWeight: '500',
@@ -2722,14 +3544,69 @@ function App() {
                         transition: 'background-color 0.2s'
                       }}
                     >
-                      {recordsLoading ? '生成中...' : 'Generate Report'}
+                      {recordsLoading ? 'Generating...' : 'Generate Report'}
                     </button>
+                    <button 
+                        onClick={async () => {
+                          try {
+                            // 先获取要生成的报告数量
+                            const count = await (window.electronAPI as any).report.getBatchReportCount(
+                              recordsFilter.startDate,
+                              recordsFilter.endDate,
+                              recordsFilter.customerName || undefined
+                            );
+                            
+                            // 如果数量大于20，显示确认对话框
+                            if (count > 20) {
+                              setBatchReportCount(count);
+                              setPendingBatchParams({
+                                startDate: recordsFilter.startDate,
+                                endDate: recordsFilter.endDate,
+                                customerName: recordsFilter.customerName || undefined
+                              });
+                              setShowBatchConfirmDialog(true);
+                              return;
+                            }
+                            
+                            // 如果数量小于等于20，直接生成
+                            await startBatchReportGeneration(
+                              recordsFilter.startDate,
+                              recordsFilter.endDate,
+                              recordsFilter.customerName || undefined
+                            );
+                          } catch (error: any) {
+                            console.error('Failed to check batch report count:', error);
+                            alert(`Failed to check report count: ${error.message || 'Unknown error'}`);
+                          }
+                        }}
+                        className="generate-report-btn"
+                        disabled={recordsLoading}
+                        style={{
+                          backgroundColor: recordsLoading ? '#6c757d' : '#dc3545',
+                          color: 'white',
+                          border: 'none',
+                          padding: '8px 16px',
+                          borderRadius: '4px',
+                          fontSize: '14px',
+                          fontWeight: '500',
+                          cursor: recordsLoading ? 'not-allowed' : 'pointer',
+                          transition: 'background-color 0.2s',
+                          marginLeft: '10px'
+                        }}
+                      >
+                        {recordsLoading 
+                          ? (batchProgress 
+                              ? `Generating ${batchProgress.current}/${batchProgress.total}...` 
+                              : 'Generating...') 
+                          : 'Generate All Police Reports'}
+                      </button>
+                    </>
                   )}
                 </div>
               </div>
             </div>
 
-            {/* 记录列表 */}
+            {/* Record list */}
             <div className="records-list">
               {recordsLoading ? (
                 <div className="loading">Loading records...</div>
@@ -2766,118 +3643,123 @@ function App() {
                         }}>
                           Total Amount: ${session.total_amount.toFixed(2)}
                         </div>
-                        {session.status === 'unfinished' && (
-                          <button
-                            onClick={async (e) => {
-                              e.stopPropagation();
-                              try {
-                                // 加载session数据
-                                const sessionData = await window.electronAPI.weighingSessions.getById(session.id);
-                                const weighings = await window.electronAPI.weighings.getBySession(session.id);
-                                
-                                // 设置客户
-                                if (sessionData.customer_id) {
-                                  const customerIdStr = sessionData.customer_id.toString();
-                                  setWeighingForm(prev => ({
-                                    ...prev,
-                                    customer_id: customerIdStr,
-                                    notes: sessionData.notes || ''
-                                  }));
-                                  
-                                  // 手动加载客户详情
-                                  try {
-                                    const customer = await window.electronAPI.customers.getById(sessionData.customer_id);
-                                    setSelectedCustomer(customer);
-                                    
-                                    // 加载车辆信息
-                                    const vehicles = await window.electronAPI.vehicles.getByCustomerId(sessionData.customer_id);
-                                    setCustomerVehicles(vehicles || []);
-                                    
-                                    // 清空biometric数据，让用户重新采集
-                                    setBiometricData(null);
-                                    setBiometricImageCache({});
-                                    setBiometricImageErrors({});
-                                  } catch (error) {
-                                    console.error('Failed to load customer details:', error);
-                                  }
-                                } else {
-                                  // 如果没有客户，清空相关状态
-                                  setSelectedCustomer(null);
-                                  setCustomerVehicles([]);
-                                  setBiometricData(null);
-                                }
-                                
-                                // 恢复metal list
-                                const restoredMetalList = weighings.map((w: any, index: number) => ({
-                                  id: Date.now() + index, // 生成临时ID
-                                  metal_type_id: w.waste_type_id,
-                                  metal_type_name: w.waste_type_name || w.metal_symbol || 'Unknown',
-                                  grossWeight: 0, // 数据库中没有保存，设为0
-                                  tareWeight: 0, // 数据库中没有保存，设为0
-                                  weight: parseFloat(w.weight) || 0, // 确保是数字
-                                  unit_price: parseFloat(w.unit_price) || 0, // 确保是数字
-                                  total_amount: parseFloat(w.total_amount) || 0 // 确保是数字
-                                }));
-                                setMetalList(restoredMetalList);
-                                
-                                // 恢复waste photos（如果有）
-                                const photoPaths = weighings
-                                  .filter((w: any) => w.product_photo_path)
-                                  .map((w: any, index: number) => ({
-                                    id: Date.now() + index,
-                                    path: w.product_photo_path,
-                                    preview: '' // 稍后加载
-                                  }));
-                                
-                                // 加载照片预览
-                                const photosWithPreview = await Promise.all(
-                                  photoPaths.map(async (photo) => {
-                                    try {
-                                      const imageData = await window.electronAPI.image.readFile(photo.path);
-                                      return { ...photo, preview: imageData || '' };
-                                    } catch {
-                                      return photo;
-                                    }
-                                  })
-                                );
-                                setWastePhotos(photosWithPreview);
-                                
-                                // 设置编辑状态
-                                setEditingSessionId(session.id);
-                                
-                                // 切换到Weighing页面
-                                setActiveTab('weighing');
-                                
-                                // 更新unfinished数量
-                                await loadUnfinishedCount();
-                              } catch (error) {
-                                console.error('Failed to load session data:', error);
-                                alert('Failed to load session data');
-                              }
-                            }}
-                            style={{
-                              marginTop: '10px',
-                              padding: '8px 16px',
-                              backgroundColor: '#28a745',
-                              color: 'white',
-                              border: 'none',
-                              borderRadius: '6px',
-                              cursor: 'pointer',
-                              fontSize: '14px',
-                              fontWeight: '500'
-                            }}
-                          >
-                            Continue
-                          </button>
-                        )}
                       </div>
                       {expandedRecord === session.id && (
-                        <SessionDetails sessionId={session.id} />
+                        <SessionDetails 
+                          sessionId={session.id} 
+                          onContinue={async (sessionId) => {
+                            try {
+                              // 加载session数据
+                              const sessionData = await window.electronAPI.weighingSessions.getById(sessionId);
+                              const weighings = await window.electronAPI.weighings.getBySession(sessionId);
+                              
+                              // 设置客户
+                              if (sessionData.customer_id) {
+                                const customerIdStr = sessionData.customer_id.toString();
+                                setWeighingForm(prev => ({
+                                  ...prev,
+                                  customer_id: customerIdStr,
+                                  notes: sessionData.notes || ''
+                                }));
+                                
+                                // 手动加载客户详情
+                                try {
+                                  const customer = await window.electronAPI.customers.getById(sessionData.customer_id);
+                                  setSelectedCustomer(customer);
+                                  
+                                  // 加载车辆信息
+                                  const vehicles = await window.electronAPI.vehicles.getByCustomerId(sessionData.customer_id);
+                                  setCustomerVehicles(vehicles || []);
+                                  
+                                  // 加载已有的biometric数据（如果存在）
+                                  await loadBiometricData();
+                                } catch (error) {
+                                  console.error('Failed to load customer details:', error);
+                                }
+                              } else {
+                                // 如果没有客户，清空相关状态
+                                setSelectedCustomer(null);
+                                setCustomerVehicles([]);
+                                setBiometricData(null);
+                                setBiometricImageCache({});
+                                setBiometricImageErrors({});
+                              }
+                              
+                              // Restore metal list with photos
+                              const restoredMetalList = await Promise.all(
+                                weighings.map(async (w: any, index: number) => {
+                                  const photos: any[] = [];
+                                  
+                                  // If this weighing has a photo, load it
+                                  if (w.product_photo_path) {
+                                    try {
+                                      const preview = await window.electronAPI.image.readFile(w.product_photo_path);
+                                      photos.push({
+                                        id: Date.now() + index,
+                                        path: w.product_photo_path,
+                                        preview: preview || ''
+                                      });
+                                    } catch (error) {
+                                      console.error('Failed to load photo preview:', error);
+                                      // Still add photo with path even if preview fails
+                                      photos.push({
+                                        id: Date.now() + index,
+                                        path: w.product_photo_path,
+                                        preview: ''
+                                      });
+                                    }
+                                  }
+                                  
+                                  return {
+                                    id: Date.now() + index, // Generate temporary ID
+                                    metal_type_id: w.waste_type_id,
+                                    metal_type_name: w.waste_type_name || w.metal_symbol || 'Unknown',
+                                    grossWeight: 0, // Not saved in database, set to 0
+                                    tareWeight: 0, // Not saved in database, set to 0
+                                    weight: parseFloat(w.weight) || 0, // Ensure is number
+                                    unit_price: parseFloat(w.unit_price) || 0, // Ensure is number
+                                    total_amount: parseFloat(w.total_amount) || 0, // Ensure is number
+                                    photos: photos // Associate photos with this metal item
+                                  };
+                                })
+                              );
+                              setMetalList(restoredMetalList);
+                              setWastePhotos([]); // Clear form photos
+                              
+                              // 设置编辑状态
+                              setEditingSessionId(sessionId);
+                              
+                              // 切换到Weighing页面
+                              setActiveTab('weighing');
+                              
+                              // 更新unfinished数量
+                              await loadUnfinishedCount();
+                            } catch (error) {
+                              console.error('Failed to load session data:', error);
+                              alert('Failed to load session data');
+                            }
+                          }}
+                          onDelete={async (sessionId) => {
+                            try {
+                              await window.electronAPI.weighingSessions.delete(sessionId);
+                              // 关闭详情
+                              setExpandedRecord(null);
+                              // 刷新Records列表（使用当前页码和过滤器）
+                              await loadRecordsData(recordsFilter.page, recordsFilter);
+                              // 更新unfinished数量
+                              await loadUnfinishedCount();
+                              alert('Session deleted successfully');
+                            } catch (error: any) {
+                              console.error('Failed to delete session:', error);
+                              alert(`Failed to delete session: ${error.message || 'Unknown error'}`);
+                            }
+                          }}
+                        />
                       )}
                     </div>
                   ))}
                   
-                  {/* 分页控件 */}
+                  {/* Pagination controls */}
                   {recordsData.pagination.totalPages > 1 && (
                     <div className="pagination">
                       <button 
@@ -2964,7 +3846,7 @@ function App() {
         )}
       </main>
 
-      {/* 生物识别组件 */}
+      {/* Biometric component */}
       {showCameraCapture && (
         <CameraCapture
           onCapture={handleFaceCaptured}
@@ -2986,7 +3868,7 @@ function App() {
         />
       )}
 
-      {/* 设置组件 */}
+      {/* Settings component */}
       {showSettings && (
         <Settings
           onClose={() => setShowSettings(false)}
@@ -3005,7 +3887,7 @@ function App() {
       )}
 
 
-      {/* Waste照片摄像头组件 */}
+      {/* Waste photo camera component */}
       {showWasteCamera && (
         <CameraCapture
           onCapture={handleWastePhotoCaptured}
@@ -3013,7 +3895,7 @@ function App() {
         />
       )}
 
-      {/* 导入进度窗口 */}
+      {/* Import progress window */}
       <ImportProgress
         isVisible={importProgress !== null}
         progress={importProgress?.percent || 0}
@@ -3027,7 +3909,135 @@ function App() {
         }}
       />
 
-      {/* 添加车辆模态框 */}
+      {/* Quick add customer modal */}
+      {showQuickAddCustomerModal && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.5)',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          zIndex: 1000
+        }} onClick={() => setShowQuickAddCustomerModal(false)}>
+          <div style={{
+            backgroundColor: 'white',
+            borderRadius: '8px',
+            padding: '30px',
+            width: '500px',
+            maxWidth: '90vw',
+            maxHeight: '90vh',
+            overflow: 'auto',
+            boxShadow: '0 4px 20px rgba(0,0,0,0.3)'
+          }} onClick={(e) => e.stopPropagation()}>
+            <h2 style={{ marginTop: 0, marginBottom: '20px', color: '#333' }}>Quick Add Customer</h2>
+            
+            <div className="form-group" style={{ marginBottom: '15px' }}>
+              <label style={{ display: 'block', marginBottom: '5px', fontWeight: '500', color: '#333' }}>
+                Customer Name <span style={{ color: 'red' }}>*</span>
+              </label>
+              <input
+                type="text"
+                value={quickAddCustomerForm.name}
+                onChange={(e) => setQuickAddCustomerForm(prev => ({ ...prev, name: e.target.value }))}
+                placeholder="Enter customer name"
+                style={{
+                  width: '100%',
+                  padding: '10px',
+                  borderRadius: '6px',
+                  border: '1px solid #ddd',
+                  fontSize: '14px'
+                }}
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && quickAddCustomerForm.name.trim()) {
+                    handleQuickAddCustomer();
+                  }
+                }}
+              />
+            </div>
+
+            <div className="form-group" style={{ marginBottom: '15px' }}>
+              <label style={{ display: 'block', marginBottom: '5px', fontWeight: '500', color: '#333' }}>
+                Phone Number
+              </label>
+              <input
+                type="text"
+                value={quickAddCustomerForm.phone}
+                onChange={(e) => setQuickAddCustomerForm(prev => ({ ...prev, phone: e.target.value }))}
+                placeholder="Enter phone number (optional)"
+                style={{
+                  width: '100%',
+                  padding: '10px',
+                  borderRadius: '6px',
+                  border: '1px solid #ddd',
+                  fontSize: '14px'
+                }}
+              />
+            </div>
+
+            <div className="form-group" style={{ marginBottom: '20px' }}>
+              <label style={{ display: 'block', marginBottom: '5px', fontWeight: '500', color: '#333' }}>
+                Address
+              </label>
+              <input
+                type="text"
+                value={quickAddCustomerForm.address}
+                onChange={(e) => setQuickAddCustomerForm(prev => ({ ...prev, address: e.target.value }))}
+                placeholder="Enter address (optional)"
+                style={{
+                  width: '100%',
+                  padding: '10px',
+                  borderRadius: '6px',
+                  border: '1px solid #ddd',
+                  fontSize: '14px'
+                }}
+              />
+            </div>
+
+            <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => {
+                  setShowQuickAddCustomerModal(false);
+                  setQuickAddCustomerForm({ name: '', phone: '', address: '' });
+                }}
+                style={{
+                  padding: '10px 20px',
+                  backgroundColor: '#6c757d',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                  fontSize: '14px',
+                  fontWeight: '500'
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleQuickAddCustomer}
+                style={{
+                  padding: '10px 20px',
+                  background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                  fontSize: '14px',
+                  fontWeight: '500'
+                }}
+              >
+                Add Customer
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add vehicle modal */}
       {showAddVehicleModal && (
         <div style={{
           position: 'fixed',
@@ -3193,7 +4203,59 @@ function App() {
           </div>
         </div>
       )}
+
+      {/* 关闭时同步提示对话框 */}
+      {showClosingSyncDialog && (
+        <div style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.7)',
+          display: 'flex',
+          justifyContent: 'center',
+          alignItems: 'center',
+          zIndex: 10001
+        }}>
+          <div style={{
+            backgroundColor: 'white',
+            padding: '30px',
+            borderRadius: '10px',
+            maxWidth: '400px',
+            width: '90%',
+            boxShadow: '0 4px 20px rgba(0, 0, 0, 0.3)',
+            textAlign: 'center'
+          }}>
+            <div style={{
+              marginBottom: '20px',
+              fontSize: '48px'
+            }}>
+              ⏳
+            </div>
+            <h2 style={{
+              marginTop: 0,
+              marginBottom: '15px',
+              color: '#333',
+              fontSize: '18px',
+              fontWeight: '600'
+            }}>
+              Syncing data
+            </h2>
+            <p style={{
+              marginBottom: 0,
+              color: '#666',
+              fontSize: '14px',
+              lineHeight: '1.6'
+            }}>
+              {closingSyncMessage}
+            </p>
+          </div>
+        </div>
+      )}
+
     </div>
+    </>
   );
 }
 

@@ -16,16 +16,18 @@ interface DeviceInfo {
 interface AppSettings {
   language: string;
   theme: 'light' | 'dark' | 'auto';
-  notifications: boolean;
-  autoSave: boolean;
   defaultCamera?: string;
   defaultFingerprint?: string;
-  dataRetention: number;
-  backupEnabled: boolean;
-  backupInterval: number;
-  backupServerUrl?: string;
+  defaultPrinter?: string;
   autoUpdateCheck: boolean;
   updateCheckInterval: number;
+}
+
+interface CompanySettings {
+  companyName: string;
+  address: string;
+  city: string;
+  zipCode: string;
 }
 
 // 格式化字节数
@@ -38,16 +40,10 @@ const formatBytes = (bytes: number): string => {
 };
 
 const Settings: React.FC<SettingsProps> = ({ onClose }) => {
-  const [activeTab, setActiveTab] = useState<'general' | 'devices' | 'sync' | 'advanced'>('general');
+  const [activeTab, setActiveTab] = useState<'general' | 'devices' | 'account' | 'company'>('general');
   const [settings, setSettings] = useState<AppSettings>({
     language: 'en-US',
     theme: 'light',
-    notifications: true,
-    autoSave: true,
-    dataRetention: 365,
-    backupEnabled: false,
-    backupInterval: 24,
-    backupServerUrl: 'https://backup-server-1378.azurewebsites.net/backup/upload',
     autoUpdateCheck: true,
     updateCheckInterval: 24
   });
@@ -68,62 +64,22 @@ const Settings: React.FC<SettingsProps> = ({ onClose }) => {
     available: false,
     downloading: false
   });
-  const [backupStatus, setBackupStatus] = useState<{
-    backingUp: boolean;
-    progress?: {
-      stage: string;
-      progress: number;
-      message: string;
-    };
-    lastBackup?: string;
-    networkStatus?: boolean;
-  }>({
-    backingUp: false
-  });
+  const [showUpdateConfirm, setShowUpdateConfirm] = useState(false);
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
-  
-  // 同步相关状态
-  const [syncStatus, setSyncStatus] = useState<{
-    syncing: boolean;
-    progress?: {
-      stage: string;
-      progress: number;
-      message: string;
-      deviceCount?: number;
-      syncedRecords?: number;
-      totalRecords?: number;
-    };
-    discoveredDevices?: Array<{
-      id: string;
-      name: string;
-      ip: string;
-      port: number;
-      activationId: number;
-      lastSyncTime?: string;
-    }>;
-    lastSync?: string;
-  }>({
-    syncing: false
+  const [companySettings, setCompanySettings] = useState<CompanySettings>({
+    companyName: '',
+    address: '',
+    city: '',
+    zipCode: ''
   });
-
+  
   useEffect(() => {
     loadSettings();
     loadDevices();
-    
-    // 设置同步进度监听
-    (window.electronAPI as any).sync.onProgress((progress: any) => {
-      setSyncStatus(prev => ({
-        ...prev,
-        progress: progress,
-        syncing: progress.stage !== 'completed' && progress.stage !== 'error'
-      }));
-    });
-    
-    return () => {
-      (window.electronAPI as any).sync.removeProgressListener();
-    };
+    loadCompanySettings();
   }, []);
 
   const loadSettings = async () => {
@@ -131,7 +87,21 @@ const Settings: React.FC<SettingsProps> = ({ onClose }) => {
       const settingsData = await window.electronAPI.settings.getSettings();
       setSettings(settingsData);
     } catch (error) {
-      console.error('加载设置失败:', error);
+      console.error('Failed to load settings:', error);
+    }
+  };
+
+  const loadCompanySettings = async () => {
+    try {
+      const settingsData = await window.electronAPI.settings.getSettings();
+      setCompanySettings({
+        companyName: settingsData.companyName || '',
+        address: settingsData.address || '',
+        city: settingsData.city || '',
+        zipCode: settingsData.zipCode || ''
+      });
+    } catch (error) {
+      console.error('Failed to load company settings:', error);
     }
   };
 
@@ -158,20 +128,131 @@ const Settings: React.FC<SettingsProps> = ({ onClose }) => {
     }
   };
 
+  // Test SigWeb Service
+  const testSigWebService = async () => {
+    try {
+      console.log('[Settings] Testing SigWeb Service...');
+      
+      // Check if SigWeb is installed directly from window (SigWebTablet.js is loaded in renderer)
+      let sigWebInstalled = false;
+      let sigWebVersion = '';
+      
+      if (typeof (window as any).IsSigWebInstalled === 'function') {
+        try {
+          sigWebInstalled = (window as any).IsSigWebInstalled();
+          console.log(`[Settings] SigWeb installed: ${sigWebInstalled}`);
+          
+          if (sigWebInstalled && typeof (window as any).GetSigWebVersion === 'function') {
+            sigWebVersion = (window as any).GetSigWebVersion();
+            console.log(`[Settings] SigWeb version: ${sigWebVersion}`);
+          }
+        } catch (error) {
+          console.error('[Settings] Error checking SigWeb:', error);
+        }
+      } else {
+        console.warn('[Settings] IsSigWebInstalled function not found - SigWebTablet.js may not be loaded');
+      }
+      
+      if (sigWebInstalled) {
+        showMessage('success', `SigWeb Service is running! Version: ${sigWebVersion || 'unknown'}`);
+      } else {
+        showMessage('error', 'SigWeb Service is not running or not installed. Please check if SigWeb Service is running on ports 47289/47290.');
+      }
+    } catch (error) {
+      console.error('[Settings] SigWeb test failed:', error);
+      showMessage('error', `Failed to test SigWeb: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  };
+
   // Refresh devices of a specific type
   const refreshDeviceType = async (deviceType: DeviceInfo['type']) => {
     try {
       // Set loading state only for this specific device type
       setIsLoading(true);
+      console.log(`[Settings] Refreshing ${deviceType} devices...`);
+      
+      // For tablet devices, check SigWeb first
+      if (deviceType === 'tablet') {
+        try {
+          // Check SigWeb directly from window (SigWebTablet.js is loaded in renderer)
+          let sigWebInstalled = false;
+          let sigWebVersion = '';
+          
+          if (typeof (window as any).IsSigWebInstalled === 'function') {
+            try {
+              sigWebInstalled = (window as any).IsSigWebInstalled();
+              console.log(`[Settings] SigWeb installed: ${sigWebInstalled}`);
+              
+              if (sigWebInstalled && typeof (window as any).GetSigWebVersion === 'function') {
+                sigWebVersion = (window as any).GetSigWebVersion();
+                console.log(`[Settings] SigWeb version: ${sigWebVersion}`);
+              }
+            } catch (error) {
+              console.warn(`[Settings] SigWeb check failed:`, error);
+            }
+          }
+          
+          if (sigWebInstalled) {
+            
+            // If SigWeb is installed, add it as a detected device
+            const sigWebDevice: DeviceInfo = {
+              id: 'sigweb_tablet',
+              name: `SigWeb Signature Pad (v${sigWebVersion})`,
+              type: 'tablet',
+              status: 'connected',
+              details: {
+                sigWebInstalled: true,
+                version: sigWebVersion
+              }
+            };
+            
+            // Still get hardware devices, but add SigWeb device first
+            const timeoutDuration = 30000;
+            const timeoutPromise = new Promise((_, reject) => 
+              setTimeout(() => reject(new Error(`Device loading timeout after ${timeoutDuration}ms`)), timeoutDuration)
+            );
+            
+            console.log(`[Settings] Calling getDevices for ${deviceType}...`);
+            let hardwareDevices: DeviceInfo[] = [];
+            try {
+              hardwareDevices = await Promise.race([
+                window.electronAPI.settings.getDevices(deviceType),
+                timeoutPromise
+              ]) as DeviceInfo[];
+            } catch (error) {
+              console.warn(`[Settings] Hardware device detection failed, but SigWeb is available:`, error);
+            }
+            
+            // Combine SigWeb device with hardware devices
+            const devicesData = [sigWebDevice, ...hardwareDevices];
+            console.log(`[Settings] Received ${devicesData.length} ${deviceType} devices (including SigWeb):`, devicesData);
+            
+            setDevices(prevDevices => {
+              const otherDevices = prevDevices.filter(d => d.type !== deviceType);
+              return [...otherDevices, ...devicesData];
+            });
+            return;
+          }
+        } catch (error) {
+          console.warn(`[Settings] SigWeb check failed:`, error);
+          // Continue with hardware detection
+        }
+      }
+      
+      // Increase timeout for tablet devices (they may take longer to detect)
+      const timeoutDuration = deviceType === 'tablet' ? 30000 : 10000;
       const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Device loading timeout')), 10000)
+        setTimeout(() => reject(new Error(`Device loading timeout after ${timeoutDuration}ms`)), timeoutDuration)
       );
       
       // Only get devices of the specific type
+      console.log(`[Settings] Calling getDevices for ${deviceType}...`);
       const devicesData = await Promise.race([
         window.electronAPI.settings.getDevices(deviceType),
         timeoutPromise
       ]) as DeviceInfo[];
+      
+      console.log(`[Settings] Received ${devicesData.length} ${deviceType} devices:`, devicesData);
       
       // Only update devices of the specific type, keep other device types unchanged
       setDevices(prevDevices => {
@@ -187,12 +268,25 @@ const Settings: React.FC<SettingsProps> = ({ onClose }) => {
   };
 
   const saveSettings = async () => {
+    setIsSaving(true);
     try {
+      // Save app settings
       await window.electronAPI.settings.saveSettings(settings);
+      // Save company settings
+      await window.electronAPI.settings.saveSettings({
+        companyName: companySettings.companyName,
+        address: companySettings.address,
+        city: companySettings.city,
+        zipCode: companySettings.zipCode
+      });
       showMessage('success', 'Settings saved successfully!');
     } catch (error) {
       console.error('Failed to save settings:', error);
-      showMessage('error', 'Failed to save settings');
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      console.error('Error details:', errorMessage);
+      showMessage('error', `Failed to save settings: ${errorMessage}`);
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -212,55 +306,6 @@ const Settings: React.FC<SettingsProps> = ({ onClose }) => {
     };
   }, []);
 
-  // 设置备份进度监听
-  useEffect(() => {
-    const progressCallback = (progress: { stage: string; progress: number; message: string }) => {
-      setBackupStatus(prev => ({
-        ...prev,
-        progress: progress
-      }));
-    };
-
-    window.electronAPI.backup.onProgress(progressCallback);
-
-    // 检查网络状态
-    window.electronAPI.backup.checkNetwork().then((isOnline) => {
-      setBackupStatus(prev => ({ ...prev, networkStatus: isOnline }));
-    });
-
-    return () => {
-      window.electronAPI.backup.removeProgressListener();
-    };
-  }, []);
-
-  const handleBackupNow = async () => {
-    if (!settings.backupServerUrl) {
-      showMessage('error', 'Please configure backup server URL first');
-      return;
-    }
-
-    try {
-      setBackupStatus(prev => ({ ...prev, backingUp: true }));
-      
-      // 更新备份服务器URL
-      await window.electronAPI.backup.updateSettings(settings.backupServerUrl);
-      
-      // 执行备份
-      const result = await window.electronAPI.backup.performBackup();
-      
-      setBackupStatus(prev => ({
-        ...prev,
-        backingUp: false,
-        lastBackup: new Date().toLocaleString()
-      }));
-      
-      showMessage('success', result.message || 'Backup completed successfully');
-    } catch (error) {
-      console.error('Backup failed:', error);
-      setBackupStatus(prev => ({ ...prev, backingUp: false }));
-      showMessage('error', `Backup failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-  };
 
   const handleCheckForUpdates = async () => {
     try {
@@ -277,31 +322,8 @@ const Settings: React.FC<SettingsProps> = ({ onClose }) => {
           downloadUrl: result.downloadUrl
         });
         
-        // 显示更新提示对话框
-        const shouldUpdate = confirm(
-          `A new version ${result.version} is available!\n\n${result.releaseNotes || 'Update available'}\n\nWould you like to download and install it now?`
-        );
-        
-        if (shouldUpdate && result.downloadUrl) {
-          setUpdateStatus(prev => ({
-            ...prev,
-            downloading: true,
-            downloadProgress: { downloaded: 0, total: 0, percent: 0 }
-          }));
-          
-          try {
-            await window.electronAPI.update.downloadUpdate(result.downloadUrl);
-            // 下载和安装已开始，应用将自动退出
-            showMessage('success', 'Update downloaded. Installation will begin shortly...');
-          } catch (error) {
-            console.error('Failed to download update:', error);
-            setUpdateStatus(prev => ({
-              ...prev,
-              downloading: false
-            }));
-            showMessage('error', `Failed to download update: ${error instanceof Error ? error.message : 'Unknown error'}`);
-          }
-        }
+        // 显示自定义更新确认弹窗
+        setShowUpdateConfirm(true);
       } else {
         setUpdateStatus({
           checking: false,
@@ -313,43 +335,201 @@ const Settings: React.FC<SettingsProps> = ({ onClose }) => {
     } catch (error) {
       console.error('Failed to check for updates:', error);
       setUpdateStatus({ checking: false, available: false, downloading: false });
-      showMessage('error', `Failed to check for updates: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    }
-  };
-
-  const resetSettings = async () => {
-    if (confirm('Are you sure you want to reset all settings? This action cannot be undone.')) {
-      try {
-        await window.electronAPI.settings.resetSettings();
-        await loadSettings();
-        showMessage('success', 'Settings have been reset');
-      } catch (error) {
-        console.error('Failed to reset settings:', error);
-        showMessage('error', 'Failed to reset settings');
+      
+      // Provide more user-friendly error message
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      if (errorMessage.includes('404') || errorMessage.includes('Not Found')) {
+        showMessage('error', 'Update server not configured. Please contact your administrator.');
+      } else {
+        showMessage('error', `Failed to check for updates: ${errorMessage}`);
       }
     }
   };
 
-  const exportSettings = async () => {
+  const handleConfirmUpdate = async () => {
+    if (!updateStatus.downloadUrl) return;
+    
+    setShowUpdateConfirm(false);
+    
+    setUpdateStatus(prev => ({
+      ...prev,
+      downloading: true,
+      downloadProgress: { downloaded: 0, total: 0, percent: 0 }
+    }));
+    
+    // 显示开始下载的提示
+    showMessage('info', 'Starting download... The application will automatically restart after installation.');
+    
     try {
-      const settingsJson = await window.electronAPI.settings.exportSettings();
-      const blob = new Blob([settingsJson], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'settings.json';
-      a.click();
-      URL.revokeObjectURL(url);
-      showMessage('success', 'Settings exported successfully');
+      await window.electronAPI.update.downloadUpdate(updateStatus.downloadUrl);
+      // 下载完成，安装已开始，应用将自动退出并重启
+      showMessage('success', 'Update downloaded. Installation in progress. The application will restart automatically...');
+      // 给用户一点时间看到消息
+      setTimeout(() => {
+        // 应用会在 installUpdate 中自动退出
+      }, 1000);
     } catch (error) {
-      console.error('Failed to export settings:', error);
-      showMessage('error', 'Failed to export settings');
+      console.error('Failed to download update:', error);
+      setUpdateStatus(prev => ({
+        ...prev,
+        downloading: false
+      }));
+      showMessage('error', `Failed to download update: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   };
 
-  const showMessage = (type: 'success' | 'error', text: string) => {
-    setMessage({ type, text });
+  const handleCancelUpdate = () => {
+    setShowUpdateConfirm(false);
+  };
+
+  const showMessage = (type: 'success' | 'error' | 'info', text: string) => {
+    setMessage({ type: type === 'info' ? 'success' : type, text });
     setTimeout(() => setMessage(null), 3000);
+  };
+
+  // Change Password Form Component
+  const ChangePasswordForm: React.FC = () => {
+    const [currentPassword, setCurrentPassword] = useState('');
+    const [newPassword, setNewPassword] = useState('');
+    const [confirmPassword, setConfirmPassword] = useState('');
+    const [isChanging, setIsChanging] = useState(false);
+    const [changePasswordMessage, setChangePasswordMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+    const handleChangePassword = async () => {
+      // 验证输入
+      if (!currentPassword) {
+        setChangePasswordMessage({ type: 'error', text: 'Please enter your current password' });
+        return;
+      }
+
+      if (!newPassword) {
+        setChangePasswordMessage({ type: 'error', text: 'Please enter a new password' });
+        return;
+      }
+
+      if (newPassword.length < 6) {
+        setChangePasswordMessage({ type: 'error', text: 'New password must be at least 6 characters long' });
+        return;
+      }
+
+      if (newPassword !== confirmPassword) {
+        setChangePasswordMessage({ type: 'error', text: 'New password and confirm password do not match' });
+        return;
+      }
+
+      if (currentPassword === newPassword) {
+        setChangePasswordMessage({ type: 'error', text: 'New password must be different from current password' });
+        return;
+      }
+
+      setIsChanging(true);
+      setChangePasswordMessage(null);
+
+      try {
+        const result = await (window.electronAPI as any).auth.changePassword(currentPassword, newPassword);
+        
+        if (result.success) {
+          setChangePasswordMessage({ type: 'success', text: result.message || 'Password changed successfully!' });
+          // 清空表单
+          setCurrentPassword('');
+          setNewPassword('');
+          setConfirmPassword('');
+          // 3秒后清除成功消息
+          setTimeout(() => setChangePasswordMessage(null), 3000);
+        } else {
+          setChangePasswordMessage({ type: 'error', text: result.message || 'Failed to change password' });
+        }
+      } catch (error: any) {
+        console.error('Failed to change password:', error);
+        setChangePasswordMessage({ type: 'error', text: `Failed to change password: ${error.message || 'Unknown error'}` });
+      } finally {
+        setIsChanging(false);
+      }
+    };
+
+    return (
+      <div className="setting-group" style={{ maxWidth: '500px' }}>
+        <div className="setting-group" style={{ marginBottom: '1.5rem' }}>
+          <label>Current Password</label>
+          <input 
+            type="password"
+            value={currentPassword}
+            onChange={(e) => setCurrentPassword(e.target.value)}
+            placeholder="Enter your current password"
+            style={{ width: '100%', padding: '8px', marginTop: '5px' }}
+            disabled={isChanging}
+          />
+        </div>
+
+        <div className="setting-group" style={{ marginBottom: '1.5rem' }}>
+          <label>New Password</label>
+          <input 
+            type="password"
+            value={newPassword}
+            onChange={(e) => setNewPassword(e.target.value)}
+            placeholder="Enter new password (at least 6 characters)"
+            style={{ width: '100%', padding: '8px', marginTop: '5px' }}
+            disabled={isChanging}
+          />
+          <small style={{ color: '#666', fontSize: '12px', display: 'block', marginTop: '5px' }}>
+            Password must be at least 6 characters long
+          </small>
+        </div>
+
+        <div className="setting-group" style={{ marginBottom: '1.5rem' }}>
+          <label>Confirm New Password</label>
+          <input 
+            type="password"
+            value={confirmPassword}
+            onChange={(e) => setConfirmPassword(e.target.value)}
+            placeholder="Confirm new password"
+            style={{ width: '100%', padding: '8px', marginTop: '5px' }}
+            disabled={isChanging}
+          />
+        </div>
+
+        {changePasswordMessage && (
+          <div 
+            style={{ 
+              padding: '10px', 
+              marginBottom: '1rem',
+              borderRadius: '4px',
+              backgroundColor: changePasswordMessage.type === 'success' ? '#d4edda' : '#f8d7da',
+              color: changePasswordMessage.type === 'success' ? '#155724' : '#721c24',
+              border: `1px solid ${changePasswordMessage.type === 'success' ? '#c3e6cb' : '#f5c6cb'}`
+            }}
+          >
+            {changePasswordMessage.text}
+          </div>
+        )}
+
+        <div className="setting-group">
+          <button
+            onClick={handleChangePassword}
+            disabled={isChanging}
+            style={{
+              padding: '10px 20px',
+              backgroundColor: isChanging ? '#6c757d' : '#007bff',
+              color: 'white',
+              border: 'none',
+              borderRadius: '4px',
+              cursor: isChanging ? 'not-allowed' : 'pointer',
+              fontSize: '14px',
+              fontWeight: '500'
+            }}
+          >
+            {isChanging ? (
+              <>
+                <span className="spinner"></span>
+                Changing Password...
+              </>
+            ) : (
+              'Change Password'
+            )}
+          </button>
+        </div>
+      </div>
+    );
   };
 
   const handleSettingChange = (key: keyof AppSettings, value: any) => {
@@ -379,16 +559,16 @@ const Settings: React.FC<SettingsProps> = ({ onClose }) => {
               🔧 Device Management
             </button>
             <button 
-              className={activeTab === 'sync' ? 'active' : ''}
-              onClick={() => setActiveTab('sync')}
+              className={activeTab === 'company' ? 'active' : ''}
+              onClick={() => setActiveTab('company')}
             >
-              🔄 Data Sync
+              🏢 Company Settings
             </button>
             <button 
-              className={activeTab === 'advanced' ? 'active' : ''}
-              onClick={() => setActiveTab('advanced')}
+              className={activeTab === 'account' ? 'active' : ''}
+              onClick={() => setActiveTab('account')}
             >
-              ⚙️ Advanced Settings
+              👤 Account Settings
             </button>
           </div>
 
@@ -420,28 +600,6 @@ const Settings: React.FC<SettingsProps> = ({ onClose }) => {
                     <option value="dark">Dark Theme</option>
                     <option value="auto">Follow System</option>
                   </select>
-                </div>
-
-                <div className="setting-group">
-                  <label>
-                    <input 
-                      type="checkbox"
-                      checked={settings.notifications}
-                      onChange={(e) => handleSettingChange('notifications', e.target.checked)}
-                    />
-                    Enable Notifications
-                  </label>
-                </div>
-
-                <div className="setting-group">
-                  <label>
-                    <input 
-                      type="checkbox"
-                      checked={settings.autoSave}
-                      onChange={(e) => handleSettingChange('autoSave', e.target.checked)}
-                    />
-                    Auto Save
-                  </label>
                 </div>
 
                 <div className="setting-group" style={{ marginTop: '2rem', paddingTop: '1.5rem', borderTop: '1px solid #dee2e6' }}>
@@ -607,13 +765,27 @@ const Settings: React.FC<SettingsProps> = ({ onClose }) => {
                           <span className="device-category-icon">✍️</span>
                           Handwriting Tablet
                         </h4>
-                        <button 
-                          onClick={() => refreshDeviceType('tablet')}
-                          className="refresh-device-btn"
-                          disabled={isLoading}
-                        >
-                          🔄 Refresh
-                        </button>
+                        <div style={{ display: 'flex', gap: '8px' }}>
+                          <button 
+                            onClick={testSigWebService}
+                            className="refresh-device-btn"
+                            style={{ 
+                              backgroundColor: '#28a745',
+                              fontSize: '12px',
+                              padding: '6px 12px'
+                            }}
+                            title="Test SigWeb Service connection"
+                          >
+                            🧪 Test SigWeb
+                          </button>
+                          <button 
+                            onClick={() => refreshDeviceType('tablet')}
+                            className="refresh-device-btn"
+                            disabled={isLoading}
+                          >
+                            🔄 Refresh
+                          </button>
+                        </div>
                       </div>
                       <div className="device-list">
                         {devices.filter(d => d.type === 'tablet').length === 0 ? (
@@ -694,14 +866,65 @@ const Settings: React.FC<SettingsProps> = ({ onClose }) => {
                           </div>
                         ) : (
                           devices.filter(d => d.type === 'printer').map(device => (
-                            <div key={device.id} className="device-item">
-                              <div className="device-info">
-                                <div className="device-name">{device.name}</div>
+                            <div key={device.id} className="device-item" style={{ 
+                              border: settings.defaultPrinter === device.id ? '2px solid #007bff' : '1px solid #dee2e6',
+                              backgroundColor: settings.defaultPrinter === device.id ? '#f0f7ff' : 'white'
+                            }}>
+                              <div className="device-info" style={{ flex: 1 }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                  <div className="device-name">{device.name}</div>
+                                  {settings.defaultPrinter === device.id && (
+                                    <span style={{ 
+                                      fontSize: '11px', 
+                                      backgroundColor: '#007bff', 
+                                      color: 'white', 
+                                      padding: '2px 8px', 
+                                      borderRadius: '10px',
+                                      fontWeight: '500'
+                                    }}>
+                                      Default
+                                    </span>
+                                  )}
+                                  {device.details?.isDefault && settings.defaultPrinter !== device.id && (
+                                    <span style={{ 
+                                      fontSize: '11px', 
+                                      backgroundColor: '#6c757d', 
+                                      color: 'white', 
+                                      padding: '2px 8px', 
+                                      borderRadius: '10px',
+                                      fontWeight: '500'
+                                    }}>
+                                      System Default
+                                    </span>
+                                  )}
+                                </div>
                                 <div className={`device-status ${device.status}`}>
                                   {device.status === 'connected' ? 'Connected' : 
                                    device.status === 'disconnected' ? 'Disconnected' : 'Error'}
                                 </div>
                               </div>
+                              <button
+                                onClick={() => {
+                                  handleSettingChange('defaultPrinter', device.id);
+                                  showMessage('success', `Set "${device.name}" as default printer`);
+                                }}
+                                style={{
+                                  padding: '6px 12px',
+                                  backgroundColor: settings.defaultPrinter === device.id ? '#6c757d' : '#007bff',
+                                  color: 'white',
+                                  border: 'none',
+                                  borderRadius: '4px',
+                                  cursor: 'pointer',
+                                  fontSize: '12px',
+                                  fontWeight: '500',
+                                  whiteSpace: 'nowrap',
+                                  marginLeft: '10px'
+                                }}
+                                disabled={settings.defaultPrinter === device.id}
+                                title={settings.defaultPrinter === device.id ? 'Already set as default' : 'Set as default printer'}
+                              >
+                                {settings.defaultPrinter === device.id ? '✓ Default' : 'Set as Default'}
+                              </button>
                             </div>
                           ))
                         )}
@@ -712,332 +935,67 @@ const Settings: React.FC<SettingsProps> = ({ onClose }) => {
               </div>
             )}
             
-            {activeTab === 'sync' && (
+            {activeTab === 'company' && (
               <div className="settings-section">
-                <h3>Data Synchronization</h3>
+                <h3>Company Settings</h3>
+                <p style={{ color: '#666', marginBottom: '20px' }}>
+                  Configure your company information. These settings will be used in reports and receipts.
+                </p>
                 
                 <div className="setting-group">
-                  <p style={{ color: '#666', marginBottom: '20px' }}>
-                    Synchronize data between devices on the same network or from the cloud server.
-                  </p>
-                  
-                  <div style={{ display: 'flex', gap: '10px', marginBottom: '20px', flexWrap: 'wrap' }}>
-                    <button
-                      onClick={async () => {
-                        setSyncStatus(prev => ({ ...prev, syncing: true }));
-                        try {
-                          const result = await (window.electronAPI as any).sync.performAutoSync();
-                          if (result.success) {
-                            setMessage({ type: 'success', text: `Sync completed: ${result.syncedRecords} records synced` });
-                            setSyncStatus(prev => ({ ...prev, lastSync: new Date().toISOString(), syncing: false }));
-                          } else {
-                            setMessage({ type: 'error', text: `Sync failed: ${result.message}` });
-                            setSyncStatus(prev => ({ ...prev, syncing: false }));
-                          }
-                        } catch (error) {
-                          setMessage({ type: 'error', text: `Sync error: ${error instanceof Error ? error.message : 'Unknown error'}` });
-                          setSyncStatus(prev => ({ ...prev, syncing: false }));
-                        }
-                      }}
-                      disabled={syncStatus.syncing}
-                      style={{
-                        padding: '10px 20px',
-                        backgroundColor: '#1976d2',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '5px',
-                        cursor: syncStatus.syncing ? 'not-allowed' : 'pointer',
-                        fontSize: '14px',
-                        fontWeight: '500'
-                      }}
-                    >
-                      {syncStatus.syncing ? 'Syncing...' : '🔄 Auto Sync (Local Network or Cloud)'}
-                    </button>
-                    
-                    <button
-                      onClick={async () => {
-                        setSyncStatus(prev => ({ ...prev, syncing: true }));
-                        try {
-                          const devices = await (window.electronAPI as any).sync.discoverDevices();
-                          setSyncStatus(prev => ({ ...prev, discoveredDevices: devices, syncing: false }));
-                          setMessage({ type: 'success', text: `Found ${devices.length} device(s) on local network` });
-                        } catch (error) {
-                          setMessage({ type: 'error', text: `Discovery failed: ${error instanceof Error ? error.message : 'Unknown error'}` });
-                          setSyncStatus(prev => ({ ...prev, syncing: false }));
-                        }
-                      }}
-                      disabled={syncStatus.syncing}
-                      style={{
-                        padding: '10px 20px',
-                        backgroundColor: '#4caf50',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '5px',
-                        cursor: syncStatus.syncing ? 'not-allowed' : 'pointer',
-                        fontSize: '14px',
-                        fontWeight: '500'
-                      }}
-                    >
-                      🔍 Discover Local Devices
-                    </button>
-                    
-                    <button
-                      onClick={async () => {
-                        setSyncStatus(prev => ({ ...prev, syncing: true }));
-                        try {
-                          const result = await (window.electronAPI as any).sync.syncFromCloud();
-                          if (result.success) {
-                            setMessage({ type: 'success', text: `Cloud sync completed: ${result.syncedRecords} records synced` });
-                            setSyncStatus(prev => ({ ...prev, lastSync: new Date().toISOString(), syncing: false }));
-                          } else {
-                            setMessage({ type: 'error', text: `Cloud sync failed: ${result.message}` });
-                            setSyncStatus(prev => ({ ...prev, syncing: false }));
-                          }
-                        } catch (error) {
-                          setMessage({ type: 'error', text: `Cloud sync error: ${error instanceof Error ? error.message : 'Unknown error'}` });
-                          setSyncStatus(prev => ({ ...prev, syncing: false }));
-                        }
-                      }}
-                      disabled={syncStatus.syncing || !settings.backupServerUrl}
-                      style={{
-                        padding: '10px 20px',
-                        backgroundColor: '#ff9800',
-                        color: 'white',
-                        border: 'none',
-                        borderRadius: '5px',
-                        cursor: (syncStatus.syncing || !settings.backupServerUrl) ? 'not-allowed' : 'pointer',
-                        fontSize: '14px',
-                        fontWeight: '500',
-                        opacity: !settings.backupServerUrl ? 0.5 : 1
-                      }}
-                    >
-                      ☁️ Sync from Cloud
-                    </button>
-                  </div>
-                  
-                  {syncStatus.progress && (
-                    <div style={{ marginBottom: '20px', padding: '15px', backgroundColor: '#f5f5f5', borderRadius: '5px' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px' }}>
-                        <span style={{ fontWeight: '500' }}>{syncStatus.progress.message}</span>
-                        <span style={{ color: '#666' }}>{syncStatus.progress.progress}%</span>
-                      </div>
-                      <div style={{ width: '100%', height: '8px', backgroundColor: '#e0e0e0', borderRadius: '4px', overflow: 'hidden' }}>
-                        <div
-                          style={{
-                            width: `${syncStatus.progress.progress}%`,
-                            height: '100%',
-                            backgroundColor: '#1976d2',
-                            transition: 'width 0.3s ease'
-                          }}
-                        />
-                      </div>
-                      {syncStatus.progress.syncedRecords !== undefined && (
-                        <div style={{ marginTop: '10px', fontSize: '12px', color: '#666' }}>
-                          Synced: {syncStatus.progress.syncedRecords} / {syncStatus.progress.totalRecords || '?'} records
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  
-                  {syncStatus.discoveredDevices && syncStatus.discoveredDevices.length > 0 && (
-                    <div style={{ marginBottom: '20px' }}>
-                      <h4 style={{ marginBottom: '10px' }}>Discovered Devices ({syncStatus.discoveredDevices.length})</h4>
-                      {syncStatus.discoveredDevices.map((device) => (
-                        <div
-                          key={device.id}
-                          style={{
-                            padding: '15px',
-                            marginBottom: '10px',
-                            border: '1px solid #e0e0e0',
-                            borderRadius: '5px',
-                            display: 'flex',
-                            justifyContent: 'space-between',
-                            alignItems: 'center'
-                          }}
-                        >
-                          <div>
-                            <div style={{ fontWeight: '500' }}>{device.name}</div>
-                            <div style={{ fontSize: '12px', color: '#666' }}>
-                              {device.ip}:{device.port}
-                              {device.lastSyncTime && ` • Last sync: ${new Date(device.lastSyncTime).toLocaleString()}`}
-                            </div>
-                          </div>
-                          <button
-                            onClick={async () => {
-                              setSyncStatus(prev => ({ ...prev, syncing: true }));
-                              try {
-                                const result = await (window.electronAPI as any).sync.syncWithDevice(device);
-                                if (result.success) {
-                                  setMessage({ type: 'success', text: `Sync with ${device.name} completed: ${result.syncedRecords} records synced` });
-                                  setSyncStatus(prev => ({ ...prev, lastSync: new Date().toISOString(), syncing: false }));
-                                } else {
-                                  setMessage({ type: 'error', text: `Sync failed: ${result.message}` });
-                                  setSyncStatus(prev => ({ ...prev, syncing: false }));
-                                }
-                              } catch (error) {
-                                setMessage({ type: 'error', text: `Sync error: ${error instanceof Error ? error.message : 'Unknown error'}` });
-                                setSyncStatus(prev => ({ ...prev, syncing: false }));
-                              }
-                            }}
-                            disabled={syncStatus.syncing}
-                            style={{
-                              padding: '8px 16px',
-                              backgroundColor: '#1976d2',
-                              color: 'white',
-                              border: 'none',
-                              borderRadius: '5px',
-                              cursor: syncStatus.syncing ? 'not-allowed' : 'pointer',
-                              fontSize: '12px'
-                            }}
-                          >
-                            Sync Now
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  
-                  {syncStatus.lastSync && (
-                    <div style={{ marginTop: '20px', padding: '10px', backgroundColor: '#e8f5e9', borderRadius: '5px', fontSize: '12px', color: '#2e7d32' }}>
-                      ✓ Last sync: {new Date(syncStatus.lastSync).toLocaleString()}
-                    </div>
-                  )}
-                  
-                  {!settings.backupServerUrl && (
-                    <div style={{ marginTop: '20px', padding: '10px', backgroundColor: '#fff3cd', borderRadius: '5px', fontSize: '12px', color: '#856404' }}>
-                      ⚠️ Cloud sync requires a backup server URL. Configure it in Advanced Settings.
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-            
-            {activeTab === 'advanced' && (
-              <div className="settings-section">
-                <h3>Advanced Settings</h3>
-                
-                <div className="setting-group">
-                  <label>Data Retention (Days)</label>
+                  <label>Company Name</label>
                   <input 
-                    type="number"
-                    value={settings.dataRetention}
-                    onChange={(e) => handleSettingChange('dataRetention', parseInt(e.target.value))}
-                    min="1"
-                    max="3650"
+                    type="text"
+                    value={companySettings.companyName}
+                    onChange={(e) => setCompanySettings(prev => ({ ...prev, companyName: e.target.value }))}
+                    placeholder="Enter company name"
+                    style={{ width: '100%', padding: '8px', marginTop: '5px' }}
                   />
                 </div>
 
                 <div className="setting-group">
-                  <label>
-                    <input 
-                      type="checkbox"
-                      checked={settings.backupEnabled}
-                      onChange={(e) => handleSettingChange('backupEnabled', e.target.checked)}
-                    />
-                    Enable Auto Backup
-                  </label>
+                  <label>Address</label>
+                  <input 
+                    type="text"
+                    value={companySettings.address}
+                    onChange={(e) => setCompanySettings(prev => ({ ...prev, address: e.target.value }))}
+                    placeholder="Enter street address"
+                    style={{ width: '100%', padding: '8px', marginTop: '5px' }}
+                  />
                 </div>
 
-                {settings.backupEnabled && (
-                  <>
-                    <div className="setting-group">
-                      <label>Backup Server URL</label>
-                      <input 
-                        type="text"
-                        value={settings.backupServerUrl || ''}
-                        onChange={(e) => {
-                          handleSettingChange('backupServerUrl', e.target.value);
-                          // 更新备份服务配置
-                          window.electronAPI.backup.updateSettings(e.target.value);
-                        }}
-                        placeholder="https://your-backup-server.com/api"
-                        style={{ width: '100%', padding: '8px', marginTop: '5px' }}
-                      />
-                      <small style={{ color: '#666', fontSize: '12px', display: 'block', marginTop: '5px' }}>
-                        Enter the URL of your backup server API endpoint
-                      </small>
-                    </div>
-
-                    <div className="setting-group">
-                      <label>Backup Interval (Hours)</label>
-                      <input 
-                        type="number"
-                        value={settings.backupInterval}
-                        onChange={(e) => handleSettingChange('backupInterval', parseInt(e.target.value))}
-                        min="1"
-                        max="168"
-                      />
-                    </div>
-
-                    <div className="setting-group" style={{ marginTop: '1rem', paddingTop: '1rem', borderTop: '1px solid #dee2e6' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
-                        <button
-                          onClick={handleBackupNow}
-                          disabled={backupStatus.backingUp || !settings.backupServerUrl}
-                          style={{
-                            padding: '8px 16px',
-                            backgroundColor: (backupStatus.backingUp || !settings.backupServerUrl) ? '#6c757d' : '#28a745',
-                            color: 'white',
-                            border: 'none',
-                            borderRadius: '4px',
-                            cursor: (backupStatus.backingUp || !settings.backupServerUrl) ? 'not-allowed' : 'pointer',
-                            fontSize: '14px',
-                            fontWeight: '500'
-                          }}
-                        >
-                          {backupStatus.backingUp ? 'Backing up...' : 'Backup Now'}
-                        </button>
-                        
-                        {backupStatus.networkStatus !== undefined && (
-                          <span style={{ 
-                            color: backupStatus.networkStatus ? '#28a745' : '#dc3545',
-                            fontSize: '14px'
-                          }}>
-                            {backupStatus.networkStatus ? '✓ Network Available' : '✗ Network Unavailable'}
-                          </span>
-                        )}
-
-                        {backupStatus.lastBackup && (
-                          <span style={{ color: '#666', fontSize: '12px' }}>
-                            Last backup: {backupStatus.lastBackup}
-                          </span>
-                        )}
-                      </div>
-
-                      {backupStatus.backingUp && backupStatus.progress && (
-                        <div style={{ marginTop: '10px', width: '100%' }}>
-                          <div style={{ 
-                            width: '100%', 
-                            height: '20px', 
-                            backgroundColor: '#e9ecef', 
-                            borderRadius: '10px', 
-                            overflow: 'hidden',
-                            marginBottom: '5px'
-                          }}>
-                            <div style={{
-                              width: `${backupStatus.progress.progress}%`,
-                              height: '100%',
-                              backgroundColor: '#28a745',
-                              transition: 'width 0.3s ease'
-                            }} />
-                          </div>
-                          <div style={{ fontSize: '12px', color: '#666', textAlign: 'center' }}>
-                            {backupStatus.progress.message} ({backupStatus.progress.progress}%)
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  </>
-                )}
-
-                <div className="settings-actions">
-                  <button onClick={exportSettings} className="export-btn">
-                    📤 Export Settings
-                  </button>
-                  <button onClick={resetSettings} className="reset-btn">
-                    🔄 Reset Settings
-                  </button>
+                <div className="setting-group">
+                  <label>City</label>
+                  <input 
+                    type="text"
+                    value={companySettings.city}
+                    onChange={(e) => setCompanySettings(prev => ({ ...prev, city: e.target.value }))}
+                    placeholder="Enter city"
+                    style={{ width: '100%', padding: '8px', marginTop: '5px' }}
+                  />
                 </div>
+
+                <div className="setting-group">
+                  <label>Zip Code</label>
+                  <input 
+                    type="text"
+                    value={companySettings.zipCode}
+                    onChange={(e) => setCompanySettings(prev => ({ ...prev, zipCode: e.target.value }))}
+                    placeholder="Enter zip code"
+                    style={{ width: '100%', padding: '8px', marginTop: '5px' }}
+                  />
+                </div>
+              </div>
+            )}
+            
+            {activeTab === 'account' && (
+              <div className="settings-section">
+                <h3>Account Settings</h3>
+                <p style={{ color: '#666', marginBottom: '20px' }}>
+                  Change your account password. You need to enter your current password to proceed.
+                </p>
+                
+                <ChangePasswordForm />
               </div>
             )}
           </div>
@@ -1053,12 +1011,61 @@ const Settings: React.FC<SettingsProps> = ({ onClose }) => {
             <button onClick={onClose} className="cancel-btn">
               Cancel
             </button>
-            <button onClick={saveSettings} className="save-btn">
-              Save Settings
+            <button 
+              onClick={saveSettings} 
+              className="save-btn"
+              disabled={isSaving}
+            >
+              {isSaving ? (
+                <>
+                  <span className="spinner"></span>
+                  Saving...
+                </>
+              ) : (
+                'Save Settings'
+              )}
             </button>
           </div>
         </div>
       </div>
+
+      {/* 自定义更新确认弹窗 */}
+      {showUpdateConfirm && (
+        <div className="update-confirm-overlay" onClick={handleCancelUpdate}>
+          <div className="update-confirm-modal" onClick={(e) => e.stopPropagation()}>
+            <h3>Update Available</h3>
+            <p>
+              A new version <strong>{updateStatus.version}</strong> is available!
+            </p>
+            {updateStatus.releaseNotes && (
+              <div className="release-notes">
+                <strong>Release Notes:</strong>
+                <pre>{updateStatus.releaseNotes}</pre>
+              </div>
+            )}
+            <p>
+              Would you like to download and install it now?
+            </p>
+            <p className="update-warning">
+              The application will automatically restart after installation.
+            </p>
+            <div className="update-confirm-actions">
+              <button 
+                onClick={handleCancelUpdate}
+                className="cancel-btn"
+              >
+                Cancel
+              </button>
+              <button 
+                onClick={handleConfirmUpdate}
+                className="confirm-btn"
+              >
+                Download & Install
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

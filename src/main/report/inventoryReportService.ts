@@ -40,7 +40,7 @@ export class InventoryReportService {
   /**
    * 生成Inventory Summary报告
    */
-  async generateReport(startDate: string, endDate: string): Promise<string> {
+  async generateReport(startDate: string, endDate: string, companyName?: string): Promise<string> {
     // 直接查询指定日期范围内的所有称重记录（不分组，直接查询weighings表）
     const db = getDb();
     
@@ -160,8 +160,9 @@ export class InventoryReportService {
     const stream = fs.createWriteStream(filePath);
     doc.pipe(stream);
 
-    // 标题
-    doc.fontSize(16).text("OMP", 50, 50);
+    // 标题 - 使用传入的公司名字，如果没有则使用默认值
+    const displayCompanyName = companyName || "Company";
+    doc.fontSize(16).text(displayCompanyName, 50, 50);
     const reportDate = new Date();
     const reportDateStr = reportDate.toLocaleDateString("en-US", {
       year: "numeric",
@@ -199,14 +200,17 @@ export class InventoryReportService {
     doc.moveDown(2);
 
     // 表格
+    // LETTER纸张宽度: 612pt, 边距: 50pt, 可用宽度: 512pt
     const tableTop = doc.y;
     const tableLeft = 50;
-    const colWidths = [200, 80, 80, 80, 100, 100];
+    const tableWidth = 512; // 调整表格宽度以适应页面
+    // 列宽分配：Product(160) + Units(60) + Tons(60) + Pounds(60) + AvgPrice(80) + Total(80) = 500pt
+    const colWidths = [160, 60, 60, 60, 80, 80];
     const rowHeight = 20;
     const headerHeight = 25;
 
     // 表头（蓝色背景）
-    doc.rect(tableLeft, tableTop, 590, headerHeight)
+    doc.rect(tableLeft, tableTop, tableWidth, headerHeight)
       .fill("#1E88E5")
       .stroke();
 
@@ -228,7 +232,7 @@ export class InventoryReportService {
         doc.addPage();
         currentY = 50;
         // 重新绘制表头
-        doc.rect(tableLeft, currentY, 590, headerHeight)
+        doc.rect(tableLeft, currentY, tableWidth, headerHeight)
           .fill("#1E88E5")
           .stroke();
         doc.fontSize(9).fillColor("white");
@@ -243,7 +247,7 @@ export class InventoryReportService {
       }
 
       // 行边框
-      doc.rect(tableLeft, currentY, 590, rowHeight).stroke();
+      doc.rect(tableLeft, currentY, tableWidth, rowHeight).stroke();
 
       const totalTons = product.totalPounds / 2000;
       const avgPrice = product.totalPounds > 0 ? product.totalPrice / product.totalPounds : 0;

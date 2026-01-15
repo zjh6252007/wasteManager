@@ -52,7 +52,7 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose }) => 
         setIsInitialized(true);
       }
     } catch (error) {
-      console.error('初始化摄像头失败:', error);
+      console.error('Failed to initialize camera:', error);
       setIsInitialized(true);
     }
   };
@@ -80,7 +80,7 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose }) => 
         videoRef.current.srcObject = stream;
       }
     } catch (error) {
-      console.error('启动摄像头失败:', error);
+      console.error('Failed to start camera:', error);
       alert('Failed to start camera. Please check camera permissions.');
     }
   };
@@ -154,7 +154,7 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose }) => 
       stopCamera();
       onClose();
     } catch (error) {
-      console.error('拍照失败:', error);
+      console.error('Failed to capture photo:', error);
       setIsCapturing(false);
     }
   };

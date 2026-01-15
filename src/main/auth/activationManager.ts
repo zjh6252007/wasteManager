@@ -111,12 +111,13 @@ export class ActivationManager {
       updateStmt.run(activatedAt.toISOString(), expiresAt.toISOString(), activation.id);
 
       // 创建默认管理员用户
+      // 注意：新创建的用户 cloud_verified = 0，第一次登录时必须通过服务器验证
       const passwordHash = await bcrypt.hash(password, 10);
       const userStmt = this.getDb().prepare(`
-        INSERT INTO users (activation_id, username, password_hash, role)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO users (activation_id, username, password_hash, role, cloud_verified)
+        VALUES (?, ?, ?, ?, ?)
       `);
-      userStmt.run(activation.id, username, passwordHash, 'admin');
+      userStmt.run(activation.id, username, passwordHash, 'admin', 0); // cloud_verified = 0，首次登录需要云端验证
 
       // 创建默认垃圾类型
       const defaultWasteTypes = [

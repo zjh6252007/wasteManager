@@ -25,6 +25,8 @@ export interface AppSettings {
   backupEnabled: boolean;
   backupInterval: number; // hours
   backupServerUrl?: string;
+  autoUpdateCheck?: boolean;
+  updateCheckInterval?: number;
 }
 
 export class SettingsService {
@@ -37,9 +39,9 @@ export class SettingsService {
   }
 
   /**
-   * 获取应用设置
+   * Get application settings
    */
-  async getSettings(): Promise<AppSettings> {
+  async getSettings(): Promise<AppSettings & { companyName?: string; address?: string; city?: string; zipCode?: string }> {
     const settings = repo.userSettings.getAll(this.activationId);
     
     return {
@@ -52,12 +54,19 @@ export class SettingsService {
       dataRetention: parseInt(settings.dataRetention) || 365,
       backupEnabled: settings.backupEnabled === 'true',
       backupInterval: parseInt(settings.backupInterval) || 24,
-      backupServerUrl: settings.backupServerUrl || 'https://backup-server-1378.azurewebsites.net/backup/upload'
+      backupServerUrl: settings.backupServerUrl || 'https://backup-server-1378.azurewebsites.net',
+      autoUpdateCheck: settings.autoUpdateCheck === 'true',
+      updateCheckInterval: parseInt(settings.updateCheckInterval) || 24,
+      // Company settings
+      companyName: settings.companyName,
+      address: settings.address,
+      city: settings.city,
+      zipCode: settings.zipCode
     };
   }
 
   /**
-   * 保存应用设置
+   * Save application settings
    */
   async saveSettings(settings: Partial<AppSettings>): Promise<void> {
     for (const [key, value] of Object.entries(settings)) {
@@ -68,13 +77,13 @@ export class SettingsService {
   }
 
   /**
-   * 获取设备列表
+   * Get device list
    */
   async getDevices(deviceType?: DeviceInfo['type']): Promise<DeviceInfo[]> {
     const devices: DeviceInfo[] = [];
     
     try {
-      // 如果指定了设备类型，只获取该类型的设备
+      // If device type is specified, only get devices of that type
       if (deviceType) {
         switch (deviceType) {
           case 'camera':
@@ -92,24 +101,24 @@ export class SettingsService {
         }
       }
       
-      // 获取所有设备
-      // 获取真实摄像头设备
+      // Get all devices
+      // Get real camera devices
       const cameraDevices = await this.getCameraDevices();
       devices.push(...cameraDevices);
       
-      // 获取真实指纹板设备
+      // Get real fingerprint devices
       const fingerprintDevices = await this.getFingerprintDevices();
       devices.push(...fingerprintDevices);
       
-      // 获取手写板设备
+      // Get signature pad devices
       const tabletDevices = await this.getTabletDevices();
       devices.push(...tabletDevices);
       
-      // 获取过磅秤设备
+      // Get scale devices
       const scaleDevices = await this.getScaleDevices();
       devices.push(...scaleDevices);
       
-      // 获取开发票机器设备
+      // Get invoice printer devices
       const printerDevices = await this.getPrinterDevices();
       devices.push(...printerDevices);
     } catch (error) {
@@ -120,15 +129,15 @@ export class SettingsService {
   }
 
   /**
-   * 获取摄像头设备
+   * Get camera devices
    */
   private async getCameraDevices(): Promise<DeviceInfo[]> {
     try {
-      // 如果有主窗口，使用CameraService来获取设备
+      // If main window exists, use CameraService to get devices
       if (this.mainWindow) {
         try {
           const cameraService = new CameraService(this.mainWindow);
-          console.log('SettingsService: 开始获取摄像头设备...');
+          console.log('SettingsService: Starting to get camera devices...');
           const devices = await Promise.race([
             cameraService.getCameraDevices(),
             new Promise<MediaDeviceInfo[]>((_, reject) => 
@@ -136,7 +145,7 @@ export class SettingsService {
             )
           ]);
           
-          console.log('SettingsService: 收到设备列表，数量:', devices?.length || 0);
+          console.log('SettingsService: Received device list, count:', devices?.length || 0);
           
           const result = devices
             .filter(device => device.kind === 'videoinput')
@@ -151,16 +160,16 @@ export class SettingsService {
               }
             }));
           
-          console.log('SettingsService: 转换后的设备列表:', result);
+          console.log('SettingsService: Converted device list:', result);
           return result;
         } catch (error) {
           console.error('Failed to get camera devices via CameraService:', error);
-          // 如果通过CameraService获取失败，返回空数组而不是抛出错误
+          // If getting devices via CameraService fails, return empty array instead of throwing error
           return [];
         }
       }
       
-      // 如果没有主窗口，返回空数组
+      // If no main window, return empty array
       return [];
     } catch (error) {
       console.error('Failed to get camera devices:', error);
@@ -169,13 +178,13 @@ export class SettingsService {
   }
 
   /**
-   * 获取指纹板设备
+   * Get fingerprint devices
    */
   private async getFingerprintDevices(): Promise<DeviceInfo[]> {
     try {
       const deviceList: DeviceInfo[] = [];
       
-      // 首先尝试检测Windows Biometric Framework设备
+      // First try to detect Windows Biometric Framework devices
       try {
         const { WindowsBiometricService } = await import('../fingerprint/windowsBiometric');
         const wbfDevices = await WindowsBiometricService.detectDevices();
@@ -205,7 +214,7 @@ export class SettingsService {
         console.error('Failed to detect WBF devices:', error);
       }
       
-      // 然后尝试检测USB指纹设备
+      // Then try to detect USB fingerprint devices
       try {
         const { FingerprintHardware } = await import('../fingerprint/fingerprintHardware');
         const usbDevices = await FingerprintHardware.detectDevices();
@@ -226,14 +235,14 @@ export class SettingsService {
           });
         }
         
-        // 如果没有检测到已知设备，尝试列出所有USB设备以便调试
+        // If no known devices detected, try listing all USB devices for debugging
         if (usbDevices.length === 0 && deviceList.length === 0) {
           console.log('No known fingerprint devices found, listing all USB devices for debugging...');
           try {
             const allDevices = await FingerprintHardware.listAllUsbDevices();
             console.log('All USB devices:', allDevices);
             
-            // 返回所有HID设备作为可能的指纹设备
+            // Return all HID devices as possible fingerprint devices
             const { BrowserWindow } = await import('electron');
             const mainWindow = BrowserWindow.getAllWindows()[0];
             if (mainWindow) {
@@ -255,20 +264,20 @@ export class SettingsService {
   }
 
   /**
-   * 获取手写板设备
-   * 支持所有Windows即插即用的手写板设备
+   * Get signature pad devices
+   * Supports all Windows plug-and-play signature pad devices
    */
   private async getTabletDevices(): Promise<DeviceInfo[]> {
     try {
       const devices: DeviceInfo[] = [];
-      const deviceIds = new Set<string>(); // 用于去重
+      const deviceIds = new Set<string>(); // For deduplication
       
-      console.log('开始检测手写板设备...');
+      console.log('Starting to detect signature pad devices...');
       
-      // 方法1: 检测所有Digitizer类设备（最常见的手写板类型）
-      // 不依赖设备名称，只要是Digitizer类就认为是手写板
+      // Method 1: Detect all Digitizer class devices (most common signature pad type)
+      // Don't rely on device name, any Digitizer class device is considered a signature pad
       try {
-        console.log('检测所有Digitizer类设备...');
+        console.log('Detecting all Digitizer class devices...');
         const { stdout: digitizerOutput } = await execAsync(
           `powershell -Command "Get-PnpDevice | Where-Object {$_.Class -eq 'Digitizer'} | Select-Object FriendlyName, Status, InstanceId | ConvertTo-Json"`
         );
@@ -278,14 +287,14 @@ export class SettingsService {
             const digitizerList = JSON.parse(digitizerOutput);
             const digitizerArray = Array.isArray(digitizerList) ? digitizerList : [digitizerList];
             
-            console.log(`找到 ${digitizerArray.length} 个Digitizer设备`);
+            console.log(`Found ${digitizerArray.length} Digitizer devices`);
             
             for (const device of digitizerArray) {
               if (device && (device.Status === 'OK' || device.Status === 'Started' || device.Status === 'Error')) {
                 const instanceId = device.InstanceId || `tablet_${devices.length}`;
                 if (!deviceIds.has(instanceId)) {
                   const friendlyName = device.FriendlyName || 'Handwriting Tablet';
-                  console.log(`检测到数字化仪设备: ${friendlyName} (状态: ${device.Status})`);
+                  console.log(`Detected digitizer device: ${friendlyName} (Status: ${device.Status})`);
                   devices.push({
                     id: instanceId,
                     name: friendlyName,
@@ -301,20 +310,20 @@ export class SettingsService {
               }
             }
           } catch (parseError) {
-            console.log('解析Digitizer设备JSON失败:', parseError);
-            console.log('原始输出:', digitizerOutput.substring(0, 500));
+            console.log('Failed to parse Digitizer device JSON:', parseError);
+            console.log('Original output:', digitizerOutput.substring(0, 500));
           }
         } else {
-          console.log('未找到Digitizer类设备');
+          console.log('No Digitizer class devices found');
         }
       } catch (digitizerError: any) {
-        console.log('Digitizer检测失败:', digitizerError.message || digitizerError);
+        console.log('Digitizer detection failed:', digitizerError.message || digitizerError);
       }
       
-      // 方法2: 检测USB设备中的手写板
-      // 很多手写板通过USB连接，检测USB设备
+      // Method 2: Detect signature pads in USB devices
+      // Many signature pads connect via USB, detect USB devices
       try {
-        console.log('检测USB设备中的手写板...');
+        console.log('Detecting signature pads in USB devices...');
         const { stdout: usbOutput } = await execAsync(
           `powershell -Command "Get-PnpDevice | Where-Object {$_.Class -eq 'USB' -or $_.Class -eq 'USBDevice'} | Select-Object FriendlyName, Status, InstanceId | ConvertTo-Json"`
         );
@@ -324,12 +333,12 @@ export class SettingsService {
             const usbList = JSON.parse(usbOutput);
             const usbArray = Array.isArray(usbList) ? usbList : [usbList];
             
-            console.log(`找到 ${usbArray.length} 个USB设备，正在筛选手写板...`);
+            console.log(`Found ${usbArray.length} USB devices, filtering signature pads...`);
             
             for (const device of usbArray) {
               if (device && (device.Status === 'OK' || device.Status === 'Started')) {
                 const friendlyName = (device.FriendlyName || '').toLowerCase();
-                // 更宽泛的匹配条件，包括常见的USB手写板关键词
+                // Broader matching conditions, including common USB signature pad keywords
                 if (friendlyName.includes('tablet') ||
                     friendlyName.includes('signature') ||
                     friendlyName.includes('digitizer') ||
@@ -342,7 +351,7 @@ export class SettingsService {
                     friendlyName.includes('input')) {
                   const instanceId = device.InstanceId || `tablet_${devices.length}`;
                   if (!deviceIds.has(instanceId)) {
-                    console.log(`检测到USB手写板设备: ${device.FriendlyName}`);
+                    console.log(`Detected USB signature pad device: ${device.FriendlyName}`);
                     devices.push({
                       id: instanceId,
                       name: device.FriendlyName || 'Handwriting Tablet',
@@ -359,17 +368,17 @@ export class SettingsService {
               }
             }
           } catch (parseError) {
-            console.log('解析USB设备JSON失败:', parseError);
+            console.log('Failed to parse USB device JSON:', parseError);
           }
         }
       } catch (usbError: any) {
-        console.log('USB设备检测失败:', usbError.message || usbError);
+        console.log('USB device detection failed:', usbError.message || usbError);
       }
       
-      // 方法3: 检测HID设备（Human Interface Device）
-      // 手写板通常也是HID设备
+      // Method 3: Detect HID devices (Human Interface Device)
+      // Signature pads are usually also HID devices
       try {
-        console.log('检测HID类设备...');
+        console.log('Detecting HID class devices...');
         const { stdout: hidOutput } = await execAsync(
           `powershell -Command "Get-PnpDevice | Where-Object {$_.Class -eq 'HIDClass'} | Select-Object FriendlyName, Status, InstanceId | ConvertTo-Json"`
         );
@@ -379,12 +388,12 @@ export class SettingsService {
             const hidList = JSON.parse(hidOutput);
             const hidArray = Array.isArray(hidList) ? hidList : [hidList];
             
-            console.log(`找到 ${hidArray.length} 个HID设备，正在筛选手写板...`);
+            console.log(`Found ${hidArray.length} HID devices, filtering signature pads...`);
             
             for (const device of hidArray) {
               if (device && (device.Status === 'OK' || device.Status === 'Started')) {
                 const friendlyName = (device.FriendlyName || '').toLowerCase();
-                // 宽泛匹配，包括所有可能的手写板关键词
+                // Broad matching, including all possible signature pad keywords
                 if (friendlyName.includes('tablet') ||
                     friendlyName.includes('signature') ||
                     friendlyName.includes('digitizer') ||
@@ -399,7 +408,7 @@ export class SettingsService {
                     friendlyName.includes('pointer')) {
                   const instanceId = device.InstanceId || `tablet_${devices.length}`;
                   if (!deviceIds.has(instanceId)) {
-                    console.log(`检测到HID手写板设备: ${device.FriendlyName}`);
+                    console.log(`Detected HID signature pad device: ${device.FriendlyName}`);
                     devices.push({
                       id: instanceId,
                       name: device.FriendlyName || 'Handwriting Tablet',
@@ -416,17 +425,17 @@ export class SettingsService {
               }
             }
           } catch (parseError) {
-            console.log('解析HID设备JSON失败:', parseError);
+            console.log('Failed to parse HID device JSON:', parseError);
           }
         }
       } catch (hidError: any) {
-        console.log('HID设备检测失败:', hidError.message || hidError);
+        console.log('HID device detection failed:', hidError.message || hidError);
       }
       
-      // 方法4: 如果仍然没有找到，尝试检测所有输入设备
+      // Method 4: If still not found, try detecting all input devices
       if (devices.length === 0) {
         try {
-          console.log('尝试检测所有输入设备...');
+          console.log('Trying to detect all input devices...');
           const { stdout: inputOutput } = await execAsync(
             `powershell -Command "Get-PnpDevice | Where-Object {$_.Class -eq 'Keyboard' -or $_.Class -eq 'Mouse' -or $_.Class -eq 'SystemDevice'} | Select-Object FriendlyName, Status, InstanceId | ConvertTo-Json"`
           );
@@ -436,12 +445,12 @@ export class SettingsService {
               const inputList = JSON.parse(inputOutput);
               const inputArray = Array.isArray(inputList) ? inputList : [inputList];
               
-              console.log(`找到 ${inputArray.length} 个输入设备，正在筛选...`);
+              console.log(`Found ${inputArray.length} input devices, filtering...`);
               
               for (const device of inputArray) {
                 if (device && (device.Status === 'OK' || device.Status === 'Started')) {
                   const friendlyName = (device.FriendlyName || '').toLowerCase();
-                  // 非常宽泛的匹配
+                  // Very broad matching
                   if (friendlyName.includes('tablet') ||
                       friendlyName.includes('signature') ||
                       friendlyName.includes('digitizer') ||
@@ -450,7 +459,7 @@ export class SettingsService {
                       friendlyName.includes('board')) {
                     const instanceId = device.InstanceId || `tablet_${devices.length}`;
                     if (!deviceIds.has(instanceId)) {
-                      console.log(`检测到可能的输入手写板设备: ${device.FriendlyName}`);
+                      console.log(`Detected possible input signature pad device: ${device.FriendlyName}`);
                       devices.push({
                         id: instanceId,
                         name: device.FriendlyName || 'Handwriting Tablet',
@@ -467,22 +476,22 @@ export class SettingsService {
                 }
               }
             } catch (parseError) {
-              console.log('解析输入设备JSON失败:', parseError);
+              console.log('Failed to parse input device JSON:', parseError);
             }
           }
         } catch (inputError: any) {
-          console.log('输入设备检测失败:', inputError.message || inputError);
+          console.log('Input device detection failed:', inputError.message || inputError);
         }
       }
       
-      // 如果所有方法都失败，至少返回一个通用设备（如果用户说设备已连接）
+      // If all methods fail, at least return a generic device (if user says device is connected)
       if (devices.length === 0) {
-        console.log('未检测到任何手写板设备');
-        console.log('提示: 请检查设备管理器中是否有Digitizer、HID或USB设备');
+        console.log('No signature pad devices detected');
+        console.log('Tip: Please check Device Manager for Digitizer, HID or USB devices');
       } else {
-        console.log(`手写板设备检测完成，找到 ${devices.length} 个设备`);
+        console.log(`Signature pad device detection completed, found ${devices.length} devices`);
         devices.forEach((device, index) => {
-          console.log(`  设备 ${index + 1}: ${device.name} (${device.status})`);
+          console.log(`  Device ${index + 1}: ${device.name} (${device.status})`);
         });
       }
       
@@ -494,13 +503,13 @@ export class SettingsService {
   }
 
   /**
-   * 获取过磅秤设备
+   * Get scale devices
    */
   private async getScaleDevices(): Promise<DeviceInfo[]> {
     try {
-      // 这里需要根据实际的过磅秤SDK来实现
-      // 可以通过串口设备枚举来检测
-      // 目前返回空数组，因为没有实际设备
+      // This needs to be implemented based on the actual scale SDK
+      // Can be detected through serial port device enumeration
+      // Currently returns empty array as there are no actual devices
       return [];
     } catch (error) {
       console.error('Failed to get scale devices:', error);
@@ -509,13 +518,13 @@ export class SettingsService {
   }
 
   /**
-   * 获取开发票机器设备
+   * Get invoice printer devices
    */
   private async getPrinterDevices(): Promise<DeviceInfo[]> {
     try {
-      // 这里需要根据实际的打印机SDK来实现
-      // 可以通过系统打印机API来检测
-      // 目前返回空数组，因为没有实际设备
+      // This needs to be implemented based on the actual printer SDK
+      // Can be detected through system printer API
+      // Currently returns empty array as there are no actual devices
       return [];
     } catch (error) {
       console.error('Failed to get printer devices:', error);
@@ -587,7 +596,7 @@ export class SettingsService {
       const settings = JSON.parse(settingsJson);
       await this.saveSettings(settings);
     } catch (error) {
-      throw new Error('设置文件格式错误');
+      throw new Error('Settings file format error');
     }
   }
 }

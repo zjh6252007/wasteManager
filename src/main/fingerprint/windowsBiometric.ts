@@ -161,7 +161,7 @@ export class WindowsBiometricService {
       console.error('Error capturing fingerprint via Windows Hello:', error);
       return {
         success: false,
-        error: error.message || '指纹采集失败'
+        error: error.message || 'Fingerprint capture failed'
       };
     }
   }
@@ -185,7 +185,7 @@ export class WindowsBiometricService {
     } catch (error: any) {
       return {
         success: false,
-        error: error.message || 'WinBio API调用失败'
+        error: error.message || 'WinBio API call failed'
       };
     }
   }

@@ -9,7 +9,7 @@ interface FingerprintCaptureProps {
 const FingerprintCapture: React.FC<FingerprintCaptureProps> = ({ onCapture, onClose }) => {
   const [isInitialized, setIsInitialized] = useState(false);
   const [isCapturing, setIsCapturing] = useState(false);
-  const [status, setStatus] = useState('正在初始化指纹板...');
+  const [status, setStatus] = useState('Initializing fingerprint device...');
   const [progress, setProgress] = useState(0);
 
   useEffect(() => {
@@ -21,47 +21,47 @@ const FingerprintCapture: React.FC<FingerprintCaptureProps> = ({ onCapture, onCl
 
   const initializeFingerprint = async () => {
     try {
-      setStatus('正在初始化指纹板...');
+      setStatus('Initializing fingerprint device...');
       const success = await window.electronAPI.fingerprint.init();
       if (success) {
         setIsInitialized(true);
-        setStatus('指纹板已就绪，请放置手指');
+        setStatus('Fingerprint device ready, please place finger');
         startCapture();
       } else {
-        setStatus('指纹板初始化失败');
+        setStatus('Fingerprint device initialization failed');
       }
     } catch (error) {
-      console.error('初始化指纹板失败:', error);
-      setStatus('指纹板初始化失败: ' + error);
+      console.error('Failed to initialize fingerprint device:', error);
+      setStatus('Fingerprint device initialization failed: ' + error);
     }
   };
 
   const startCapture = async () => {
     try {
-      setStatus('开始指纹采集...');
+      setStatus('Starting fingerprint capture...');
       setIsCapturing(true);
       setProgress(0);
       
       const success = await window.electronAPI.fingerprint.startCapture();
       if (success) {
-        setStatus('请将手指放在指纹板上...');
+        setStatus('Please place finger on fingerprint device...');
         captureFingerprint();
       } else {
-        setStatus('启动指纹采集失败');
+        setStatus('Failed to start fingerprint capture');
         setIsCapturing(false);
       }
     } catch (error) {
-      console.error('启动指纹采集失败:', error);
-      setStatus('启动指纹采集失败: ' + error);
+      console.error('Failed to start fingerprint capture:', error);
+      setStatus('Failed to start fingerprint capture: ' + error);
       setIsCapturing(false);
     }
   };
 
   const captureFingerprint = async () => {
     try {
-      setStatus('正在采集指纹...');
+      setStatus('Capturing fingerprint...');
       
-      // 模拟采集进度
+      // Simulate capture progress
       const progressInterval = setInterval(() => {
         setProgress(prev => {
           if (prev >= 90) {
@@ -78,24 +78,24 @@ const FingerprintCapture: React.FC<FingerprintCaptureProps> = ({ onCapture, onCl
       setProgress(100);
 
       if (result.success) {
-        setStatus('指纹采集成功！');
+        setStatus('Fingerprint captured successfully!');
         onCapture(result.template, result.imageData);
         setTimeout(() => {
           onClose();
         }, 1000);
       } else {
-        // 检查是否是Windows独占或不支持错误
-        if (result.error && (result.error.includes('Windows系统独占') || result.error.includes('不支持直接USB访问') || result.error.includes('不支持直接USB访问'))) {
-          setStatus('设备不支持直接USB访问。可能需要：1) 设备专用驱动和SDK 2) 检查设备管理器状态');
+        // Check if it's Windows exclusive or unsupported error
+        if (result.error && (result.error.includes('Windows system exclusive') || result.error.includes('Windows系统独占') || result.error.includes('does not support direct USB access') || result.error.includes('不支持直接USB访问'))) {
+          setStatus('Device does not support direct USB access. May need: 1) Device-specific driver and SDK 2) Check Device Manager status');
           setIsCapturing(false);
         } else {
-          setStatus('指纹采集失败: ' + (result.error || '未知错误'));
+          setStatus('Fingerprint capture failed: ' + (result.error || 'Unknown error'));
           setIsCapturing(false);
         }
       }
     } catch (error) {
-      console.error('指纹采集失败:', error);
-      setStatus('指纹采集失败: ' + error);
+      console.error('Fingerprint capture failed:', error);
+      setStatus('Fingerprint capture failed: ' + error);
       setIsCapturing(false);
     }
   };
@@ -104,13 +104,13 @@ const FingerprintCapture: React.FC<FingerprintCaptureProps> = ({ onCapture, onCl
     try {
       await window.electronAPI.fingerprint.stopCapture();
     } catch (error) {
-      console.error('停止指纹采集失败:', error);
+      console.error('Failed to stop fingerprint capture:', error);
     }
   };
 
   const retryCapture = () => {
     setProgress(0);
-    setStatus('请将手指放在指纹板上...');
+    setStatus('Please place finger on fingerprint device...');
     captureFingerprint();
   };
 
@@ -118,7 +118,7 @@ const FingerprintCapture: React.FC<FingerprintCaptureProps> = ({ onCapture, onCl
     <div className="fingerprint-capture-overlay">
       <div className="fingerprint-capture-modal">
         <div className="fingerprint-header">
-          <h3>指纹采集</h3>
+          <h3>Fingerprint Capture</h3>
           <button onClick={onClose} className="close-btn">×</button>
         </div>
         
@@ -139,7 +139,7 @@ const FingerprintCapture: React.FC<FingerprintCaptureProps> = ({ onCapture, onCl
                 {isCapturing ? '👆' : '👋'}
               </div>
               <div className="fingerprint-instructions">
-                {isCapturing ? '请保持手指稳定' : '请将手指放在指纹板上'}
+                {isCapturing ? 'Please keep finger steady' : 'Please place finger on fingerprint device'}
               </div>
             </div>
           </div>
@@ -150,14 +150,14 @@ const FingerprintCapture: React.FC<FingerprintCaptureProps> = ({ onCapture, onCl
                 onClick={retryCapture}
                 className="retry-btn"
               >
-                重新采集
+                Retry Capture
               </button>
             )}
             <button 
               onClick={onClose} 
               className="cancel-btn"
             >
-              取消
+              Cancel
             </button>
           </div>
         </div>

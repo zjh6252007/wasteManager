@@ -1,20 +1,38 @@
-import { SerialPort } from "serialport";
 import { BrowserWindow, ipcMain } from "electron";
 import { WeightStabilizer } from "../util/weightStabilizer";
 import { mettlerToledo, riceLake } from "./protocols";
 
+// 动态加载 serialport，避免在构建时被打包
+let serialportModule: any;
+function getSerialPort() {
+  if (!serialportModule) {
+    serialportModule = require('serialport');
+  }
+  return serialportModule.SerialPort;
+}
 
-let port: SerialPort | null = null;
+function getSerialPortList() {
+  if (!serialportModule) {
+    serialportModule = require('serialport');
+  }
+  return serialportModule.SerialPort.list.bind(serialportModule.SerialPort);
+}
+
+let port: any = null;
 let win: BrowserWindow | null = null;
 
 
-export const listPorts = async () => SerialPort.list();
+export const listPorts = async () => {
+  const list = getSerialPortList();
+  return list();
+};
 
 
 export const openScale = async (cfg: { path: string; baudRate: number; parity?: "none" | "even" | "odd"; dataBits?: 7 | 8; stopBits?: 1 | 2; protocol?: "mettler" | "ricelake" }) => {
     const proto = cfg.protocol === "mettler" ? mettlerToledo : riceLake;
     const stabilizer = new WeightStabilizer();
-    port = new SerialPort({ path: cfg.path, baudRate: cfg.baudRate ?? 9600, dataBits: cfg.dataBits ?? 7, stopBits: cfg.stopBits ?? 1, parity: cfg.parity ?? "even" });
+    const SerialPortClass = getSerialPort();
+    port = new SerialPortClass({ path: cfg.path, baudRate: cfg.baudRate ?? 9600, dataBits: cfg.dataBits ?? 7, stopBits: cfg.stopBits ?? 1, parity: cfg.parity ?? "even" });
     win = BrowserWindow.getAllWindows()[0] ?? null;
     let buf = "";
     port.on("data", (chunk: Buffer) => {

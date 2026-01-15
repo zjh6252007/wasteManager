@@ -93,7 +93,19 @@ export class BackupService {
 
     for (const table of tables) {
       try {
-        const rows = db.prepare(`SELECT * FROM ${table} WHERE activation_id = ?`).all(this.activationId);
+        let rows;
+        // activations 表没有 activation_id 列，导出所有记录
+        if (table === 'activations') {
+          rows = db.prepare(`SELECT * FROM ${table}`).all();
+        }
+        // system_config 表是全局配置表，没有 activation_id 列，导出所有记录
+        else if (table === 'system_config') {
+          rows = db.prepare(`SELECT * FROM ${table}`).all();
+        }
+        // 其他表都有 activation_id 列
+        else {
+          rows = db.prepare(`SELECT * FROM ${table} WHERE activation_id = ?`).all(this.activationId);
+        }
         data.tables[table] = rows;
       } catch (error) {
         console.error(`Error exporting table ${table}:`, error);
@@ -240,11 +252,19 @@ export class BackupService {
     // 创建ZIP文件（简化版：直接上传目录，实际应该压缩）
     // 这里我们上传整个目录作为multipart form data
     
+    // 直接使用用户配置的URL，不进行修改
+    // 如果URL已经包含完整路径，就不需要再添加
     const url = new URL(this.backupServerUrl);
-    if (!url.pathname.endsWith('/')) {
-      url.pathname += '/';
+    
+    // 只有当URL是根路径或没有路径时，才添加默认路径
+    // 如果URL已经包含路径（如 /backup/upload），就直接使用
+    if (url.pathname === '/' || url.pathname === '') {
+      url.pathname = '/backup/upload';
     }
-    url.pathname += 'backup/upload';
+    // 否则使用用户配置的完整路径
+
+    console.log('Uploading backup to:', url.toString());
+    console.log('Backup directory:', backupDir);
 
     return new Promise((resolve, reject) => {
       const formData = this.createFormData(backupDir);
@@ -256,6 +276,8 @@ export class BackupService {
       };
 
       const req = client.request(url, options, (res) => {
+        console.log('Backup upload response status:', res.statusCode);
+        console.log('Response headers:', res.headers);
         let responseData = '';
 
         res.on('data', (chunk) => {
@@ -263,6 +285,8 @@ export class BackupService {
         });
 
         res.on('end', () => {
+          console.log('Backup upload response data:', responseData.substring(0, 500));
+          
           if (res.statusCode === 200 || res.statusCode === 201) {
             try {
               const result = JSON.parse(responseData);
@@ -282,8 +306,11 @@ export class BackupService {
               });
             }
           } else {
+            const errorMessage = responseData ? 
+              (responseData.length > 200 ? responseData.substring(0, 200) : responseData) : 
+              `Upload failed with status ${res.statusCode}`;
             this.reportProgress('error', 0, `Upload failed: ${res.statusCode}`);
-            reject(new Error(`Upload failed with status ${res.statusCode}`));
+            reject(new Error(`Upload failed with status ${res.statusCode}: ${errorMessage}`));
           }
         });
       });

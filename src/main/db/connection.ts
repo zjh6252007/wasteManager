@@ -1,9 +1,17 @@
-import Database from "better-sqlite3";
 import { app } from "electron";
 import path from "node:path";
 import fs from "node:fs";
 
-let db: Database.Database | null = null;
+// 动态加载 better-sqlite3，避免在构建时被打包
+let Database: any;
+function getDatabase() {
+  if (!Database) {
+    Database = require('better-sqlite3');
+  }
+  return Database;
+}
+
+let db: any = null;
 
 export async function createDb() {
   if (db) return db;
@@ -11,17 +19,18 @@ export async function createDb() {
   const userDataPath = app.getPath("userData");
   const dbDir = path.join(userDataPath, "database");
   
-  // 确保数据库目录存在
+  // Ensure database directory exists
   if (!fs.existsSync(dbDir)) {
     fs.mkdirSync(dbDir, { recursive: true });
   }
 
   const dbPath = path.join(dbDir, "garbage_recycle.db");
-  db = new Database(dbPath);
+  const DatabaseClass = getDatabase();
+  db = new DatabaseClass(dbPath);
 
-  // 直接执行SQL语句
+  // Execute SQL statements directly
   const schema = `
-    -- 激活码表
+    -- Activation code table
     CREATE TABLE IF NOT EXISTS activations (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         activation_code TEXT UNIQUE NOT NULL,
@@ -36,7 +45,7 @@ export async function createDb() {
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
-    -- 用户表
+    -- User table
     CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         activation_id INTEGER NOT NULL,
@@ -50,7 +59,7 @@ export async function createDb() {
         UNIQUE(activation_id, username)
     );
 
-    -- 客户表
+    -- Customer table
     CREATE TABLE IF NOT EXISTS customers (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         activation_id INTEGER NOT NULL,
@@ -64,7 +73,7 @@ export async function createDb() {
         FOREIGN KEY (activation_id) REFERENCES activations(id)
     );
 
-    -- 垃圾类型表
+    -- Waste type table
     CREATE TABLE IF NOT EXISTS waste_types (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         activation_id INTEGER NOT NULL,
@@ -74,7 +83,7 @@ export async function createDb() {
         FOREIGN KEY (activation_id) REFERENCES activations(id)
     );
 
-    -- 金属种类表
+    -- Metal type table
     CREATE TABLE IF NOT EXISTS metal_types (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         activation_id INTEGER NOT NULL,
@@ -85,11 +94,13 @@ export async function createDb() {
         is_active INTEGER DEFAULT 1,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        is_synced BOOLEAN DEFAULT 0,
+        cloud_id INTEGER,
         FOREIGN KEY (activation_id) REFERENCES activations(id),
         UNIQUE(activation_id, symbol)
     );
 
-    -- 金属价格历史表
+    -- Metal price history table
     CREATE TABLE IF NOT EXISTS metal_price_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         activation_id INTEGER NOT NULL,
@@ -101,7 +112,7 @@ export async function createDb() {
         FOREIGN KEY (metal_type_id) REFERENCES metal_types(id)
     );
 
-    -- 车辆信息表
+    -- Vehicle information table
     CREATE TABLE IF NOT EXISTS vehicles (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         activation_id INTEGER NOT NULL,
@@ -111,29 +122,33 @@ export async function createDb() {
         color TEXT,
         make TEXT,
         model TEXT,
-        original_ref_no TEXT, -- 原始系统中的RefNo
+        original_ref_no TEXT, -- RefNo from original system
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        is_synced BOOLEAN DEFAULT 0,
+        cloud_id INTEGER,
         FOREIGN KEY (activation_id) REFERENCES activations(id),
         FOREIGN KEY (customer_id) REFERENCES customers(id)
     );
 
-    -- 生物识别数据表
+    -- Biometric data table
     CREATE TABLE IF NOT EXISTS biometric_data (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         activation_id INTEGER NOT NULL,
         customer_id INTEGER,
-        face_image_path TEXT, -- 面部照片路径
-        fingerprint_template BLOB, -- 指纹模板数据
-        fingerprint_image_path TEXT, -- 指纹图像路径
-        signature_image_path TEXT, -- 签名图像路径
+        face_image_path TEXT, -- Face photo path
+        fingerprint_template BLOB, -- Fingerprint template data
+        fingerprint_image_path TEXT, -- Fingerprint image path
+        signature_image_path TEXT, -- Signature image path
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        is_synced BOOLEAN DEFAULT 0,
+        cloud_id INTEGER,
         FOREIGN KEY (activation_id) REFERENCES activations(id),
         FOREIGN KEY (customer_id) REFERENCES customers(id)
     );
 
-    -- 称重会话表
+    -- Weighing session table
     CREATE TABLE IF NOT EXISTS weighing_sessions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         activation_id INTEGER NOT NULL,
@@ -142,13 +157,14 @@ export async function createDb() {
         notes TEXT,
         total_amount DECIMAL(10,2) DEFAULT 0,
         is_synced BOOLEAN DEFAULT 0,
+        cloud_id INTEGER,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (activation_id) REFERENCES activations(id),
         FOREIGN KEY (customer_id) REFERENCES customers(id)
     );
 
-    -- 称重记录表
+    -- Weighing record table
     CREATE TABLE IF NOT EXISTS weighings (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         activation_id INTEGER NOT NULL,
@@ -159,19 +175,21 @@ export async function createDb() {
         total_amount DECIMAL(10,2) NOT NULL,
         weighing_time DATETIME DEFAULT CURRENT_TIMESTAMP,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        is_synced BOOLEAN DEFAULT 0,
+        cloud_id INTEGER,
         FOREIGN KEY (activation_id) REFERENCES activations(id),
         FOREIGN KEY (session_id) REFERENCES weighing_sessions(id),
         FOREIGN KEY (waste_type_id) REFERENCES metal_types(id)
     );
 
-    -- 系统配置表
+    -- System configuration table
     CREATE TABLE IF NOT EXISTS system_config (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
-    -- 用户设置表
+    -- User settings table
     CREATE TABLE IF NOT EXISTS user_settings (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         activation_id INTEGER NOT NULL,
@@ -204,33 +222,143 @@ export async function createDb() {
     "ALTER TABLE customers ADD COLUMN weight TEXT",
     "ALTER TABLE customers ADD COLUMN hair_color TEXT",
     "ALTER TABLE customers ADD COLUMN customer_number TEXT",
+    "ALTER TABLE customers ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP",
+    "ALTER TABLE customers ADD COLUMN is_synced BOOLEAN DEFAULT 0",
+    "ALTER TABLE customers ADD COLUMN cloud_id INTEGER",
     "ALTER TABLE weighings ADD COLUMN session_id INTEGER",
     "ALTER TABLE weighings ADD COLUMN product_photo_path TEXT",
+    "ALTER TABLE weighings ADD COLUMN is_synced BOOLEAN DEFAULT 0",
+    "ALTER TABLE weighings ADD COLUMN cloud_id INTEGER",
     "ALTER TABLE biometric_data ADD COLUMN signature_image_path TEXT",
+    "ALTER TABLE biometric_data ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP",
+    "ALTER TABLE biometric_data ADD COLUMN is_synced BOOLEAN DEFAULT 0",
+    "ALTER TABLE biometric_data ADD COLUMN cloud_id INTEGER",
+    "ALTER TABLE vehicles ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP",
+    "ALTER TABLE vehicles ADD COLUMN is_synced BOOLEAN DEFAULT 0",
+    "ALTER TABLE vehicles ADD COLUMN cloud_id INTEGER",
+    "ALTER TABLE metal_types ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP",
+    "ALTER TABLE metal_types ADD COLUMN is_synced BOOLEAN DEFAULT 0",
+    "ALTER TABLE metal_types ADD COLUMN cloud_id INTEGER",
     "ALTER TABLE weighing_sessions ADD COLUMN status TEXT DEFAULT 'completed'",
-    "ALTER TABLE weighing_sessions ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP"
+    "ALTER TABLE weighing_sessions ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP",
+    "ALTER TABLE users ADD COLUMN cloud_verified BOOLEAN DEFAULT 0"
   ];
   
   for (const sql of migrationSQL) {
     try {
       db.exec(sql);
-      console.log(`Migration executed: ${sql}`);
+      // 只在开发模式下输出迁移日志
+      if (process.env.NODE_ENV === 'development') {
+        console.log(`Migration executed: ${sql}`);
+      }
     } catch (error: any) {
-      // 如果列已存在，忽略错误
+      // 如果列已存在，静默忽略（不输出日志）
       const errorMsg = error?.message || '';
       if (errorMsg.includes('duplicate column') || 
           errorMsg.includes('already exists') ||
-          errorMsg.includes('no such column') === false) {
-        console.log(`Migration: ${sql} - column may already exist or migration skipped`);
+          errorMsg.includes('duplicate column name')) {
+        // 列已存在是正常情况，不需要输出日志
       } else {
-        // 对于其他错误，也记录但不抛出，避免阻止应用启动
-        console.warn(`Migration warning: ${sql} - ${errorMsg}`);
+        // 对于其他错误，只在开发模式下记录
+        if (process.env.NODE_ENV === 'development') {
+          console.warn(`Migration warning: ${sql} - ${errorMsg}`);
+        }
+      }
+    }
+  }
+  
+  // 确保所有需要的表都有 updated_at 列（如果迁移失败，这里会再次尝试）
+  const tablesNeedingUpdatedAt = ['customers', 'weighing_sessions', 'biometric_data', 'vehicles', 'metal_types'];
+  
+  for (const tableName of tablesNeedingUpdatedAt) {
+    try {
+      // 检查列是否存在
+      const tableInfo = db.prepare(`PRAGMA table_info(${tableName})`).all() as any[];
+      const hasUpdatedAt = tableInfo.some(col => col.name === 'updated_at');
+      
+      if (!hasUpdatedAt) {
+        if (process.env.NODE_ENV === 'development') {
+          console.log(`Adding updated_at column to ${tableName} table...`);
+        }
+        db.exec(`ALTER TABLE ${tableName} ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP`);
+        if (process.env.NODE_ENV === 'development') {
+          console.log(`Successfully added updated_at column to ${tableName}`);
+        }
+      }
+    } catch (error: any) {
+      const errorMsg = error?.message || '';
+      if (!errorMsg.includes('duplicate column') && !errorMsg.includes('already exists')) {
+        // 只在开发模式下输出警告
+        if (process.env.NODE_ENV === 'development') {
+          console.warn(`Failed to ensure updated_at column exists in ${tableName}:`, errorMsg);
+        }
       }
     }
   }
 
   console.log("Database initialization completed:", dbPath);
   return db;
+}
+
+/**
+ * 确保数据库结构正确（特别是 updated_at 列）
+ * 在同步数据之前调用此函数可以避免列缺失错误
+ */
+export async function ensureDatabaseSchema(): Promise<void> {
+  console.log('[Schema] Starting database schema check...');
+  if (!db) {
+    console.log('[Schema] Database not initialized, creating...');
+    await createDb();
+    return;
+  }
+
+  // 确保所有需要的表都有 updated_at 列
+  const tablesNeedingUpdatedAt = ['customers', 'weighing_sessions', 'biometric_data', 'vehicles', 'metal_types'];
+  
+  for (const tableName of tablesNeedingUpdatedAt) {
+    try {
+      // 检查列是否存在
+      const tableInfo = db.prepare(`PRAGMA table_info(${tableName})`).all() as any[];
+      const hasUpdatedAt = tableInfo.some(col => col.name === 'updated_at');
+      
+      console.log(`[Schema] Table ${tableName}: updated_at column ${hasUpdatedAt ? 'EXISTS' : 'MISSING'}`);
+      
+      if (!hasUpdatedAt) {
+        console.log(`[Schema] Adding updated_at column to ${tableName} table...`);
+        try {
+          // SQLite 不支持在 ALTER TABLE 时使用 CURRENT_TIMESTAMP 作为默认值
+          // 对于 weighing_sessions 表，需要特殊处理
+          if (tableName === 'weighing_sessions') {
+            // 先添加列，不设置默认值
+            db.exec(`ALTER TABLE ${tableName} ADD COLUMN updated_at DATETIME`);
+            // 然后更新现有记录，使用 created_at 的值
+            db.exec(`UPDATE ${tableName} SET updated_at = COALESCE(created_at, CURRENT_TIMESTAMP) WHERE updated_at IS NULL`);
+          } else {
+            // 其他表可以正常添加
+            db.exec(`ALTER TABLE ${tableName} ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP`);
+          }
+          console.log(`[Schema] Successfully added updated_at column to ${tableName}`);
+        } catch (addError: any) {
+          // 如果添加失败，尝试不使用默认值的方式
+          if (addError.message?.includes('non-constant default')) {
+            console.log(`[Schema] Retrying without default value for ${tableName}...`);
+            db.exec(`ALTER TABLE ${tableName} ADD COLUMN updated_at DATETIME`);
+            // 更新现有记录
+            db.exec(`UPDATE ${tableName} SET updated_at = COALESCE(created_at, CURRENT_TIMESTAMP) WHERE updated_at IS NULL`);
+            console.log(`[Schema] Successfully added updated_at column to ${tableName} (without default)`);
+          } else {
+            throw addError;
+          }
+        }
+      }
+    } catch (error: any) {
+      const errorMsg = error?.message || '';
+      if (!errorMsg.includes('duplicate column') && !errorMsg.includes('already exists')) {
+        console.warn(`[Schema] Failed to ensure updated_at column exists in ${tableName}:`, errorMsg);
+      }
+    }
+  }
+  console.log('[Schema] Database schema check completed');
 }
 
 export function getDb() {
@@ -242,7 +370,7 @@ export function getDb() {
 
 // 基础数据操作类
 export class DataRepository {
-  private db: Database.Database | null = null;
+  private db: any = null;
 
   constructor() {
     // 延迟初始化，在第一次使用时才获取数据库连接
@@ -321,8 +449,23 @@ export class DataRepository {
     },
 
     getAll: (activationId: number) => {
-      const stmt = this.ensureDb().prepare("SELECT * FROM customers WHERE activation_id = ? ORDER BY created_at DESC");
-      return stmt.all(activationId);
+      // 优先显示最近有成交记录的客户，然后显示最新添加的客户
+      // 使用 session_time 而不是 updated_at，因为 session_time 在所有数据库中都存在
+      const stmt = this.ensureDb().prepare(`
+        SELECT 
+          c.*,
+          (SELECT MAX(ws.session_time)
+           FROM weighing_sessions ws
+           WHERE ws.customer_id = c.id AND ws.activation_id = ?
+          ) as last_transaction_time
+        FROM customers c
+        WHERE c.activation_id = ?
+        ORDER BY 
+          CASE WHEN last_transaction_time IS NOT NULL THEN 0 ELSE 1 END,
+          last_transaction_time DESC,
+          c.created_at DESC
+      `);
+      return stmt.all(activationId, activationId);
     },
 
     getById: (activationId: number, id: number) => {
@@ -396,13 +539,54 @@ export class DataRepository {
       const total = totalResult.total;
       
       // 获取分页数据
-      const dataStmt = this.ensureDb().prepare(`
-        SELECT * FROM customers 
-        ${whereClause}
-        ORDER BY customer_number ASC
-        LIMIT ? OFFSET ?
-      `);
-      const data = dataStmt.all(...params, pageSize, offset);
+      // 优先显示最近有成交记录的客户，然后显示最新添加的客户
+      let dataStmt;
+      let dataParams;
+      
+      if (searchQuery && searchQuery.trim()) {
+        // 有搜索条件时
+        const searchTerm = `%${searchQuery.trim()}%`;
+        dataStmt = this.ensureDb().prepare(`
+          SELECT 
+            c.*,
+            (SELECT MAX(ws.session_time)
+             FROM weighing_sessions ws
+             WHERE ws.customer_id = c.id AND ws.activation_id = ?
+            ) as last_transaction_time
+          FROM customers c
+          WHERE c.activation_id = ? AND (
+            c.customer_number LIKE ? 
+            OR LOWER(c.name) LIKE LOWER(?)
+            OR LOWER(c.address) LIKE LOWER(?)
+          )
+          ORDER BY 
+            CASE WHEN last_transaction_time IS NOT NULL THEN 0 ELSE 1 END,
+            last_transaction_time DESC,
+            c.created_at DESC
+          LIMIT ? OFFSET ?
+        `);
+        dataParams = [activationId, activationId, searchTerm, searchTerm, searchTerm, pageSize, offset];
+      } else {
+        // 无搜索条件时
+        dataStmt = this.ensureDb().prepare(`
+          SELECT 
+            c.*,
+            (SELECT MAX(ws.session_time)
+             FROM weighing_sessions ws
+             WHERE ws.customer_id = c.id AND ws.activation_id = ?
+            ) as last_transaction_time
+          FROM customers c
+          WHERE c.activation_id = ?
+          ORDER BY 
+            CASE WHEN last_transaction_time IS NOT NULL THEN 0 ELSE 1 END,
+            last_transaction_time DESC,
+            c.created_at DESC
+          LIMIT ? OFFSET ?
+        `);
+        dataParams = [activationId, activationId, pageSize, offset];
+      }
+      
+      const data = dataStmt.all(...dataParams);
       
       return {
         data,
@@ -680,11 +864,22 @@ export class DataRepository {
       notes?: string;
       status?: string;
     }) => {
+      // 使用本地时间而不是 UTC 时间
+      // 格式化为 'YYYY-MM-DD HH:MM:SS' 格式
+      const now = new Date();
+      const year = now.getFullYear();
+      const month = String(now.getMonth() + 1).padStart(2, '0');
+      const day = String(now.getDate()).padStart(2, '0');
+      const hours = String(now.getHours()).padStart(2, '0');
+      const minutes = String(now.getMinutes()).padStart(2, '0');
+      const seconds = String(now.getSeconds()).padStart(2, '0');
+      const localTime = `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+      
       const stmt = this.ensureDb().prepare(`
-        INSERT INTO weighing_sessions (activation_id, customer_id, notes, status)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO weighing_sessions (activation_id, customer_id, session_time, notes, status)
+        VALUES (?, ?, ?, ?, ?)
       `);
-      return stmt.run(activationId, data.customer_id, data.notes, data.status || 'completed');
+      return stmt.run(activationId, data.customer_id, localTime, data.notes, data.status || 'completed');
     },
 
     updateTotal: (activationId: number, sessionId: number, totalAmount: number) => {
@@ -716,15 +911,31 @@ export class DataRepository {
         return { changes: 0 };
       }
       
-      updates.push('updated_at = CURRENT_TIMESTAMP');
-      values.push(activationId, sessionId);
+      // 尝试包含 updated_at，如果列不存在会失败，则重试不包含它
+      const updatesWithTimestamp = [...updates, 'updated_at = CURRENT_TIMESTAMP'];
+      const whereValues = [activationId, sessionId];
       
-      const stmt = this.ensureDb().prepare(`
-        UPDATE weighing_sessions 
-        SET ${updates.join(', ')}
-        WHERE activation_id = ? AND id = ?
-      `);
-      return stmt.run(...values);
+      try {
+        const stmt = this.ensureDb().prepare(`
+          UPDATE weighing_sessions 
+          SET ${updatesWithTimestamp.join(', ')}
+          WHERE activation_id = ? AND id = ?
+        `);
+        return stmt.run(...values, ...whereValues);
+      } catch (error: any) {
+        // 如果 updated_at 列不存在，重试不包含它的更新
+        if (error?.message?.includes('no such column: updated_at')) {
+          console.log('updated_at column not found, updating without it');
+          const stmt = this.ensureDb().prepare(`
+            UPDATE weighing_sessions 
+            SET ${updates.join(', ')}
+            WHERE activation_id = ? AND id = ?
+          `);
+          return stmt.run(...values, ...whereValues);
+        }
+        // 其他错误直接抛出
+        throw error;
+      }
     },
 
     getById: (activationId: number, id: number) => {
@@ -745,6 +956,22 @@ export class DataRepository {
       `);
       const result = stmt.get(activationId) as { count: number };
       return result.count;
+    },
+
+    delete: (activationId: number, sessionId: number) => {
+      // 先删除该session的所有weighings（因为有外键约束）
+      const deleteWeighingsStmt = this.ensureDb().prepare(`
+        DELETE FROM weighings
+        WHERE activation_id = ? AND session_id = ?
+      `);
+      deleteWeighingsStmt.run(activationId, sessionId);
+      
+      // 然后删除session
+      const deleteSessionStmt = this.ensureDb().prepare(`
+        DELETE FROM weighing_sessions
+        WHERE activation_id = ? AND id = ?
+      `);
+      return deleteSessionStmt.run(activationId, sessionId);
     },
 
     deleteAll: (activationId: number) => {
@@ -871,7 +1098,7 @@ export class DataRepository {
       const totalResult = countStmt.get(...params) as { total: number };
       const total = totalResult.total;
 
-      // 获取分页数据
+      // 获取分页数据（使用 ws.* 获取所有列，避免列不存在的问题）
       const dataStmt = this.ensureDb().prepare(`
         SELECT ws.*, c.name as customer_name
         FROM weighing_sessions ws
@@ -1006,3 +1233,45 @@ export class DataRepository {
 }
 
 export const repo = new DataRepository();
+
+/**
+ * 检查数据库是否为空（新电脑检测）
+ * 如果没有任何业务数据（客户、称重会话等），则认为数据库为空
+ */
+export function isDatabaseEmpty(activationId: number): boolean {
+  const db = getDb();
+  
+  // 检查是否有客户
+  const customerCount = db.prepare(`
+    SELECT COUNT(*) as count FROM customers WHERE activation_id = ?
+  `).get(activationId) as { count: number };
+  
+  // 检查是否有称重会话
+  const sessionCount = db.prepare(`
+    SELECT COUNT(*) as count FROM weighing_sessions WHERE activation_id = ?
+  `).get(activationId) as { count: number };
+  
+  // 检查其他数据
+  const weighingCount = db.prepare(`
+    SELECT COUNT(*) as count FROM weighings w
+    JOIN weighing_sessions ws ON w.session_id = ws.id
+    WHERE ws.activation_id = ?
+  `).get(activationId) as { count: number };
+  
+  const metalTypeCount = db.prepare(`
+    SELECT COUNT(*) as count FROM metal_types WHERE activation_id = ?
+  `).get(activationId) as { count: number };
+  
+  console.log(`[Database Check] ActivationId ${activationId} data counts:`, {
+    customers: customerCount.count,
+    sessions: sessionCount.count,
+    weighings: weighingCount.count,
+    metalTypes: metalTypeCount.count
+  });
+  
+  // 如果既没有客户也没有称重会话，认为是新电脑
+  const isEmpty = customerCount.count === 0 && sessionCount.count === 0;
+  console.log(`[Database Check] Database is ${isEmpty ? 'EMPTY' : 'NOT EMPTY'} for activationId ${activationId}`);
+  
+  return isEmpty;
+}

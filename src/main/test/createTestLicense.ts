@@ -17,14 +17,14 @@ async function createTestLicense() {
       maxUsers: 5
     });
     
-    console.log('测试授权创建成功！');
-    console.log('授权码:', licenseKey);
-    console.log('默认管理员账号: admin');
-    console.log('默认密码: admin123');
-    console.log('请使用这些信息登录系统');
+    console.log('Test license created successfully!');
+    console.log('License key:', licenseKey);
+    console.log('Default admin account: admin');
+    console.log('Default password: admin123');
+    console.log('Please use this information to log in to the system');
     
   } catch (error) {
-    console.error('创建测试授权失败:', error);
+    console.error('Failed to create test license:', error);
   }
 }
 

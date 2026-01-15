@@ -1,12 +1,20 @@
 /**
- * 指纹硬件抽象层
- * 支持多种指纹采集器硬件
+ * Fingerprint hardware abstraction layer
+ * Supports multiple fingerprint scanner hardware
  */
 
 import { app } from 'electron';
-import * as usb from 'usb';
 import * as fs from 'fs';
 import * as path from 'path';
+
+// 动态加载 usb 模块，避免在构建时被打包
+let usb: any;
+function getUsb() {
+  if (!usb) {
+    usb = require('usb');
+  }
+  return usb;
+}
 
 export interface FingerprintDevice {
   id: string;
@@ -26,77 +34,78 @@ export interface FingerprintCaptureResult {
 }
 
 /**
- * 指纹硬件接口
+ * Fingerprint hardware interface
  */
 export class FingerprintHardware {
-  private device: usb.Device | null = null;
-  private interface: usb.Interface | null = null;
-  private endpointIn: usb.InEndpoint | null = null;
-  private endpointOut: usb.OutEndpoint | null = null;
+  private device: any = null;
+  private interface: any = null;
+  private endpointIn: any = null;
+  private endpointOut: any = null;
   private isInitialized: boolean = false;
   private deviceInfo: FingerprintDevice | null = null;
 
-  // 常见指纹采集器的Vendor ID和Product ID
-  // 支持市面上大部分主流指纹设备
+  // Common fingerprint scanner Vendor ID and Product ID
+  // Supports most mainstream fingerprint devices on the market
   private static KNOWN_DEVICES = [
-    // Synaptics 系列
+    // Synaptics series
     { vendorId: 0x0c45, productId: 0x0010, name: 'Synaptics Fingerprint Reader' },
     { vendorId: 0x0c45, productId: 0x0011, name: 'Synaptics USB WBDI' },
     { vendorId: 0x0c45, productId: 0x0012, name: 'Synaptics Fingerprint Sensor' },
     { vendorId: 0x0c45, productId: 0x0013, name: 'Synaptics WBDI Fingerprint' },
     
-    // STMicroelectronics 系列
+    // STMicroelectronics series
     { vendorId: 0x0483, productId: 0x2016, name: 'STMicroelectronics Fingerprint' },
     { vendorId: 0x0483, productId: 0x2015, name: 'STMicroelectronics Fingerprint Sensor' },
     
-    // Goodix 系列（常见于笔记本电脑）
+    // Goodix series (common in laptops)
     { vendorId: 0x27c6, productId: 0x639c, name: 'Goodix Fingerprint' },
     { vendorId: 0x27c6, productId: 0x5385, name: 'Goodix Fingerprint Sensor' },
     { vendorId: 0x27c6, productId: 0x55b4, name: 'Goodix Fingerprint Reader' },
     
-    // Validity Sensors 系列
+    // Validity Sensors series
     { vendorId: 0x138a, productId: 0x0011, name: 'Validity Sensors Fingerprint' },
     { vendorId: 0x138a, productId: 0x0017, name: 'Validity Sensors VFS5011' },
     { vendorId: 0x138a, productId: 0x0018, name: 'Validity Sensors VFS471' },
     { vendorId: 0x138a, productId: 0x003f, name: 'Validity Sensors VFS495' },
     { vendorId: 0x138a, productId: 0x0050, name: 'Validity Sensors VFS7500' },
     
-    // ZKTeco 系列（考勤机常用）
+    // ZKTeco series (commonly used in attendance machines)
     { vendorId: 0x0acd, productId: 0x2010, name: 'ZKTeco Fingerprint Scanner' },
     { vendorId: 0x0acd, productId: 0x2011, name: 'ZKTeco Fingerprint Reader' },
     
-    // Suprema 系列
+    // Suprema series
     { vendorId: 0x1c7a, productId: 0x0600, name: 'Suprema Fingerprint Scanner' },
     { vendorId: 0x1c7a, productId: 0x0601, name: 'Suprema Fingerprint Reader' },
     
-    // DigitalPersona 系列
+    // DigitalPersona series
     { vendorId: 0x05ba, productId: 0x0007, name: 'DigitalPersona Fingerprint Reader' },
     { vendorId: 0x05ba, productId: 0x000a, name: 'DigitalPersona U.are.U' },
     
-    // Upek 系列
+    // Upek series
     { vendorId: 0x147e, productId: 0x1000, name: 'Upek Fingerprint Reader' },
     { vendorId: 0x147e, productId: 0x2016, name: 'Upek TouchChip' },
     
-    // AuthenTec 系列
+    // AuthenTec series
     { vendorId: 0x08ff, productId: 0x2580, name: 'AuthenTec Fingerprint Sensor' },
     { vendorId: 0x08ff, productId: 0x2660, name: 'AuthenTec AES2501' },
     
-    // EgisTec 系列
+    // EgisTec series
     { vendorId: 0x1c7a, productId: 0x0801, name: 'EgisTec Fingerprint Sensor' },
     { vendorId: 0x1c7a, productId: 0x0802, name: 'EgisTec ES603' },
     
-    // 通用HID指纹设备（通过HID协议通信）
+    // Generic HID fingerprint devices (communicate via HID protocol)
     { vendorId: 0x0c45, productId: 0x0001, name: 'Generic Fingerprint Scanner' },
   ];
 
   /**
-   * 列出所有USB设备（用于调试）
+   * List all USB devices (for debugging)
    */
   static async listAllUsbDevices(): Promise<Array<{vendorId: number, productId: number, vendorIdHex: string, productIdHex: string, manufacturer?: string, product?: string}>> {
     const allDevices: Array<{vendorId: number, productId: number, vendorIdHex: string, productIdHex: string, manufacturer?: string, product?: string}> = [];
     
     try {
-      const usbDevices = usb.getDeviceList();
+      const usbModule = getUsb();
+      const usbDevices = usbModule.getDeviceList();
       
       for (const usbDevice of usbDevices) {
         const descriptor = usbDevice.deviceDescriptor;
@@ -134,7 +143,7 @@ export class FingerprintHardware {
           
           usbDevice.close();
         } catch (e) {
-          // 忽略错误
+          // Ignore errors
         }
         
         allDevices.push({
@@ -154,13 +163,14 @@ export class FingerprintHardware {
   }
 
   /**
-   * 检测可用的指纹设备
+   * Detect available fingerprint devices
    */
   static async detectDevices(): Promise<FingerprintDevice[]> {
     const devices: FingerprintDevice[] = [];
     
     try {
-      const usbDevices = usb.getDeviceList();
+      const usbModule = getUsb();
+      const usbDevices = usbModule.getDeviceList();
       console.log(`[FingerprintHardware] Scanning ${usbDevices.length} USB devices...`);
       
       for (const usbDevice of usbDevices) {
@@ -185,7 +195,7 @@ export class FingerprintHardware {
             }
           }
         } catch (e) {
-          // 忽略错误
+          // Ignore errors
         }
         
         // 检查设备名称是否包含指纹相关关键词（用于识别未在列表中的设备）
@@ -226,7 +236,7 @@ export class FingerprintHardware {
           
           usbDevice.close();
         } catch (e) {
-          // 忽略错误，继续处理
+          // Ignore errors，继续处理
         }
         
         // 如果设备有HID接口但没有名称，也尝试识别（可能是指纹设备）
@@ -273,7 +283,7 @@ export class FingerprintHardware {
                 manufacturer = await getString(descriptor.iManufacturer);
               }
             } catch (e) {
-              // 忽略错误
+              // Ignore errors
             }
             
             try {
@@ -282,7 +292,7 @@ export class FingerprintHardware {
                 product = fetchedProduct || (knownDevice ? knownDevice.name : `USB Device ${vendorIdHex}:${productIdHex}`);
               }
             } catch (e) {
-              // 忽略错误
+              // Ignore errors
             }
             
             try {
@@ -290,7 +300,7 @@ export class FingerprintHardware {
                 serialNumber = await getString(descriptor.iSerialNumber);
               }
             } catch (e) {
-              // 忽略错误
+              // Ignore errors
             }
             
             usbDevice.close();
@@ -345,7 +355,8 @@ export class FingerprintHardware {
       }
       
       const firstDevice = devices[0];
-      const usbDevices = usb.getDeviceList();
+      const usbModule = getUsb();
+      const usbDevices = usbModule.getDeviceList();
       const targetDevice = usbDevices.find(d => 
         d.deviceDescriptor.idVendor === firstDevice.vendorId &&
         d.deviceDescriptor.idProduct === firstDevice.productId
@@ -366,7 +377,7 @@ export class FingerprintHardware {
   /**
    * 打开USB设备
    */
-  private async openDevice(usbDevice: usb.Device): Promise<boolean> {
+  private async openDevice(usbDevice: any): Promise<boolean> {
     try {
       this.device = usbDevice;
       
@@ -376,8 +387,8 @@ export class FingerprintHardware {
       } catch (error: any) {
         // 如果设备被占用或不支持，可能是Windows Hello在使用
         if (error && (error.message?.includes('busy') || error.message?.includes('resource') || error.message?.includes('access') || error.message?.includes('LIBUSB_ERROR_BUSY') || error.message?.includes('LIBUSB_ERROR_ACCESS') || error.message?.includes('LIBUSB_ERROR_NOT_SUPPORTED'))) {
-          console.error('设备被占用或不支持直接访问，可能被Windows Hello使用:', error.message);
-          throw new Error('设备被Windows系统独占使用或不支持直接USB访问。请关闭Windows Hello指纹登录功能后重试。');
+          console.error('Device is busy or does not support direct access, may be used by Windows Hello:', error.message);
+          throw new Error('Device is exclusively used by Windows system or does not support direct USB access. Please disable Windows Hello fingerprint login and try again.');
         }
         throw error;
       }
@@ -396,15 +407,15 @@ export class FingerprintHardware {
               } catch (error: any) {
                 // 如果无法分离驱动，可能是被Windows占用
                 if (error && (error.message?.includes('busy') || error.message?.includes('resource') || error.message?.includes('LIBUSB_ERROR_BUSY'))) {
-                  console.error('无法分离内核驱动，设备可能被Windows占用');
+                  console.error('Cannot detach kernel driver, device may be occupied by Windows');
                   this.device.close();
-                  throw new Error('设备被Windows系统独占使用。请关闭Windows Hello指纹登录功能后重试。');
+                  throw new Error('Device is exclusively used by Windows system. Please disable Windows Hello fingerprint login and try again.');
                 }
                 // 其他错误忽略
               }
             }
           } catch (error: any) {
-            if (error.message?.includes('Windows系统独占')) {
+            if (error.message?.includes('Windows system exclusive') || error.message?.includes('Windows系统独占')) {
               throw error;
             }
             // 忽略其他错误
@@ -415,9 +426,9 @@ export class FingerprintHardware {
           } catch (error: any) {
             // 如果无法claim接口，可能是被占用或不支持
             if (error && (error.message?.includes('busy') || error.message?.includes('resource') || error.message?.includes('access') || error.message?.includes('LIBUSB_ERROR_BUSY') || error.message?.includes('LIBUSB_ERROR_ACCESS') || error.message?.includes('LIBUSB_ERROR_NOT_SUPPORTED'))) {
-              console.error('无法claim接口，设备可能被占用或不支持直接访问:', error.message);
+              console.error('Cannot claim interface, device may be busy or does not support direct access:', error.message);
               this.device.close();
-              throw new Error('设备被Windows系统独占使用或不支持直接USB访问。请关闭Windows Hello指纹登录功能后重试。');
+              throw new Error('Device is exclusively used by Windows system or does not support direct USB access. Please disable Windows Hello fingerprint login and try again.');
             }
             throw error;
           }
@@ -446,14 +457,14 @@ export class FingerprintHardware {
               this.interface.detachKernelDriver();
             } catch (error: any) {
               if (error && (error.message?.includes('busy') || error.message?.includes('resource') || error.message?.includes('LIBUSB_ERROR_BUSY'))) {
-                console.error('无法分离内核驱动，设备可能被Windows占用');
+                console.error('Cannot detach kernel driver, device may be occupied by Windows');
                 this.device.close();
-                throw new Error('设备被Windows系统独占使用。请关闭Windows Hello指纹登录功能后重试。');
+                throw new Error('Device is exclusively used by Windows system. Please disable Windows Hello fingerprint login and try again.');
               }
             }
           }
         } catch (error: any) {
-          if (error.message?.includes('Windows系统独占')) {
+          if (error.message?.includes('Windows system exclusive') || error.message?.includes('Windows系统独占')) {
             throw error;
           }
         }
@@ -462,9 +473,9 @@ export class FingerprintHardware {
           this.interface.claim();
         } catch (error: any) {
           if (error && (error.message?.includes('busy') || error.message?.includes('resource') || error.message?.includes('access') || error.message?.includes('LIBUSB_ERROR_BUSY') || error.message?.includes('LIBUSB_ERROR_ACCESS') || error.message?.includes('LIBUSB_ERROR_NOT_SUPPORTED'))) {
-            console.error('无法claim接口，设备可能被占用或不支持直接访问:', error.message);
+            console.error('Cannot claim interface, device may be busy or does not support direct access:', error.message);
             this.device.close();
-            throw new Error('设备被Windows系统独占使用或不支持直接USB访问。请关闭Windows Hello指纹登录功能后重试。');
+            throw new Error('Device is exclusively used by Windows system or does not support direct USB access. Please disable Windows Hello fingerprint login and try again.');
           }
           throw error;
         }
@@ -487,7 +498,7 @@ export class FingerprintHardware {
       this.cleanup();
       
       // 如果是Windows独占错误，直接抛出
-      if (error instanceof Error && error.message.includes('Windows系统独占')) {
+      if (error instanceof Error && (error.message.includes('Windows system exclusive') || error.message.includes('Windows系统独占'))) {
         throw error;
       }
       
@@ -654,7 +665,7 @@ export class FingerprintHardware {
         try {
           this.interface.release(true);
         } catch (error) {
-          // 忽略错误
+          // Ignore errors
         }
         this.interface = null;
       }
@@ -663,7 +674,7 @@ export class FingerprintHardware {
         try {
           this.device.close();
         } catch (error) {
-          // 忽略错误
+          // Ignore errors
         }
         this.device = null;
       }

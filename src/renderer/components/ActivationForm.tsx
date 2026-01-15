@@ -12,10 +12,10 @@ const ActivationForm: React.FC<ActivationFormProps> = ({ onActivationSuccess }) 
   const [error, setError] = useState('');
   const [showTestButton, setShowTestButton] = useState(true);
 
-  // 检查激活状态
+  // Check activation status
   const checkActivationStatus = async () => {
     if (!activationCode.trim()) {
-      setError('请输入激活码');
+      setError('Please enter activation code');
       return;
     }
 
@@ -34,7 +34,7 @@ const ActivationForm: React.FC<ActivationFormProps> = ({ onActivationSuccess }) 
         setActivationStatus(null);
       }
     } catch (err) {
-      setError('检查激活状态失败，请重试');
+      setError('Failed to check activation status, please try again');
       setIsActivated(false);
       setActivationStatus(null);
     } finally {
@@ -42,10 +42,10 @@ const ActivationForm: React.FC<ActivationFormProps> = ({ onActivationSuccess }) 
     }
   };
 
-  // 激活账户
+  // Activate account
   const activateAccount = async () => {
     if (!activationCode.trim() || !username.trim() || !password.trim()) {
-      setError('请填写完整信息');
+      setError('Please fill in all information');
       return;
     }
 
@@ -56,22 +56,22 @@ const ActivationForm: React.FC<ActivationFormProps> = ({ onActivationSuccess }) 
       const result = await window.electronAPI.auth.activateAccount(activationCode, username, password);
       if (result.success) {
         setError('');
-        alert('账户激活成功！');
+        alert('Account activated successfully!');
         onActivationSuccess();
       } else {
         setError(result.message);
       }
     } catch (err) {
-      setError('激活失败，请重试');
+      setError('Activation failed, please try again');
     } finally {
       setLoading(false);
     }
   };
 
-  // 登录
+  // Login
   const handleLogin = async () => {
     if (!activationCode.trim() || !username.trim() || !password.trim()) {
-      setError('请填写完整信息');
+      setError('Please fill in all information');
       return;
     }
 
@@ -87,13 +87,13 @@ const ActivationForm: React.FC<ActivationFormProps> = ({ onActivationSuccess }) 
         setError(result.message);
       }
     } catch (err) {
-      setError('登录失败，请重试');
+      setError('Login failed, please try again');
     } finally {
       setLoading(false);
     }
   };
 
-  // 创建测试激活码
+  // Create test activation code
   const createTestActivationCode = async () => {
     setLoading(true);
     setError('');
@@ -105,13 +105,13 @@ const ActivationForm: React.FC<ActivationFormProps> = ({ onActivationSuccess }) 
         setShowTestButton(false);
         setError('');
         alert(result.message);
-        // 自动检查激活状态
+        // Automatically check activation status
         await checkActivationStatus();
       } else {
         setError(result.message);
       }
     } catch (err) {
-      setError('创建测试激活码失败，请重试');
+      setError('Failed to create test activation code, please try again');
     } finally {
       setLoading(false);
     }
@@ -121,20 +121,20 @@ const ActivationForm: React.FC<ActivationFormProps> = ({ onActivationSuccess }) 
     <div className="activation-container">
       <div className="activation-form">
         <div className="activation-header">
-          <h2>垃圾回收称重系统</h2>
-          <p>请输入激活码激活账户</p>
+          <h2>Waste Recycling Scale System</h2>
+          <p>Please enter activation code to activate account</p>
         </div>
 
         <form onSubmit={(e) => e.preventDefault()}>
           <div className="form-group">
-            <label htmlFor="activationCode">激活码:</label>
+            <label htmlFor="activationCode">Activation Code:</label>
             <div className="input-group">
               <input
                 type="text"
                 id="activationCode"
                 value={activationCode}
                 onChange={(e) => setActivationCode(e.target.value)}
-                placeholder="请输入激活码"
+                placeholder="Enter activation code"
                 disabled={loading}
               />
               <button
@@ -143,40 +143,40 @@ const ActivationForm: React.FC<ActivationFormProps> = ({ onActivationSuccess }) 
                 disabled={loading || !activationCode.trim()}
                 className="check-btn"
               >
-                检查
+                Check
               </button>
             </div>
           </div>
 
           {activationStatus && isActivated && (
             <div className="activation-info">
-              <p><strong>公司名称:</strong> {activationStatus.company_name}</p>
-              <p><strong>激活时间:</strong> {new Date(activationStatus.activated_at).toLocaleDateString()}</p>
-              <p><strong>到期时间:</strong> {new Date(activationStatus.expires_at).toLocaleDateString()}</p>
-              <p><strong>剩余天数:</strong> {activationStatus.daysLeft} 天</p>
+              <p><strong>Company Name:</strong> {activationStatus.company_name}</p>
+              <p><strong>Activated At:</strong> {new Date(activationStatus.activated_at).toLocaleDateString()}</p>
+              <p><strong>Expires At:</strong> {new Date(activationStatus.expires_at).toLocaleDateString()}</p>
+              <p><strong>Days Remaining:</strong> {activationStatus.daysLeft} days</p>
             </div>
           )}
 
           <div className="form-group">
-            <label htmlFor="username">用户名:</label>
+            <label htmlFor="username">Username:</label>
             <input
               type="text"
               id="username"
               value={username}
               onChange={(e) => setUsername(e.target.value)}
-              placeholder="请输入用户名"
+              placeholder="Enter username"
               disabled={loading}
             />
           </div>
 
           <div className="form-group">
-            <label htmlFor="password">密码:</label>
+            <label htmlFor="password">Password:</label>
             <input
               type="password"
               id="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="请输入密码"
+              placeholder="Enter password"
               disabled={loading}
             />
           </div>
@@ -191,7 +191,7 @@ const ActivationForm: React.FC<ActivationFormProps> = ({ onActivationSuccess }) 
                 disabled={loading}
                 className="activate-btn"
               >
-                {loading ? '激活中...' : '激活账户'}
+                {loading ? 'Activating...' : 'Activate Account'}
               </button>
             ) : (
               <button
@@ -200,7 +200,7 @@ const ActivationForm: React.FC<ActivationFormProps> = ({ onActivationSuccess }) 
                 disabled={loading}
                 className="login-btn"
               >
-                {loading ? '登录中...' : '登录'}
+                {loading ? 'Logging in...' : 'Login'}
               </button>
             )}
           </div>
@@ -214,10 +214,10 @@ const ActivationForm: React.FC<ActivationFormProps> = ({ onActivationSuccess }) 
               disabled={loading}
               className="test-btn"
             >
-              创建测试激活码
+              Create Test Activation Code
             </button>
           )}
-          <p>如有问题，请联系系统管理员</p>
+          <p>If you have any questions, please contact the system administrator</p>
         </div>
       </div>
     </div>

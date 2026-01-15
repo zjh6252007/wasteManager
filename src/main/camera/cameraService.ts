@@ -24,7 +24,7 @@ export class CameraService {
       this.mainWindow.webContents.send('camera:start');
       return true;
     } catch (error) {
-      console.error('启动摄像头失败:', error);
+      console.error('Failed to start camera:', error);
       return false;
     }
   }
@@ -36,7 +36,7 @@ export class CameraService {
     try {
       this.mainWindow.webContents.send('camera:stop');
     } catch (error) {
-      console.error('停止摄像头失败:', error);
+      console.error('Failed to stop camera:', error);
     }
   }
 
@@ -76,15 +76,15 @@ export class CameraService {
       const timeout = setTimeout(() => {
         // 清理监听器
         ipcMain.removeListener('camera:devices', handleDevices);
-        reject(new Error('获取摄像头设备超时'));
+        reject(new Error('Timeout getting camera devices'));
       }, 5000);
 
       const handleDevices = (event: any, devices: any[]) => {
         clearTimeout(timeout);
         // 清理监听器
         ipcMain.removeListener('camera:devices', handleDevices);
-        console.log('主进程收到摄像头设备列表:', devices?.length || 0, '个设备');
-        console.log('设备详情:', devices);
+        console.log('Main process received camera device list:', devices?.length || 0, 'devices');
+        console.log('Device details:', devices);
         
         // 将接收到的对象转换为MediaDeviceInfo格式
         const mediaDevices: MediaDeviceInfo[] = (devices || []).map((d: any) => ({
@@ -101,7 +101,7 @@ export class CameraService {
       ipcMain.once('camera:devices', handleDevices);
       
       // 发送消息到渲染进程请求设备列表
-      console.log('主进程发送摄像头设备枚举请求');
+      console.log('Main process sending camera device enumeration request');
       this.mainWindow.webContents.send('camera:get-devices');
     });
   }
